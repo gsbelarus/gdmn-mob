@@ -3,6 +3,8 @@ import { mainSettingGroup } from '@lib/store';
 import { Settings, StatusType } from '@lib/types';
 import { BarCodeScanner } from 'expo-barcode-scanner';
 
+// import { BarcodeType } from 'expo-camera';
+
 import { IGood } from '../store/app/types';
 
 const statusColors = ['#E91E63', '#06567D', '#80B12C', '#FFA700'] as const;
@@ -36,6 +38,8 @@ export const getStatusColor = (status: StatusType) => {
 };
 
 export const ONE_SECOND_IN_MS = 1000;
+
+export const SCAN_REFOCUS_DELAY_MS = 1000;
 
 export const ONE_KG_IN_G = 1000;
 
@@ -161,6 +165,26 @@ export const appSettings: Settings = {
     id: 'scanUnit',
     sortOrder: 36,
     description: 'Сканирование в шт.',
+    data: false,
+    type: 'boolean',
+    visible: true,
+    group: mainSettingGroup,
+    checkSettingsCode: true,
+  },
+  showOrders: {
+    id: 'showOrders',
+    sortOrder: 37,
+    description: 'Показывать заявки',
+    data: false,
+    type: 'boolean',
+    visible: true,
+    group: mainSettingGroup,
+    checkSettingsCode: true,
+  },
+  allowLineDelete: {
+    id: 'allowLineDelete',
+    sortOrder: 38,
+    description: 'Разрешить удаление позиций',
     data: false,
     type: 'boolean',
     visible: true,
@@ -402,6 +426,8 @@ export const barCodeTypes = [
   BarCodeScanner.Constants.BarCodeType.ean13,
   BarCodeScanner.Constants.BarCodeType.ean8,
 ];
+
+// export const barCodeTypes: BarcodeType[] = ['qr', 'code128', 'ean13', 'ean8'];
 
 export const cellColors = {
   default: '#5aa176',

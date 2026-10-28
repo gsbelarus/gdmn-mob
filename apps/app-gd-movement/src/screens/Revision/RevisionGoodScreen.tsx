@@ -12,12 +12,12 @@ import { IScannedObject } from '@lib/client-types';
 
 import { generateId } from '@lib/mobile-hooks';
 
-import { INamedEntity } from '@lib/types';
+import { INamedEntity, ISettingsOption } from '@lib/types';
 
 import { RevisionStackParamList } from '../../navigation/Root/types';
 import { IRevisionDocument, IRevisionLine } from '../../store/types';
 import { IGood, IMGoodData, IMGoodRemain, IRemains } from '../../store/app/types';
-import { getRemGoodByContact } from '../../utils/helpers';
+import { getBrc, getRemGoodByContact } from '../../utils/helpers';
 import { unknownGood } from '../../utils/constants';
 
 const RevisionGoodScreen = () => {
@@ -46,6 +46,10 @@ const RevisionGoodScreen = () => {
 
   const doc = docSelectors.selectByDocId<IRevisionDocument>(docId);
   const lines = useMemo(() => doc?.lines?.sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)), [doc?.lines]);
+  const isBlocked = doc?.status !== 'DRAFT';
+
+  const settings = useSelector((state) => state.settings?.data);
+  const prefixGtin = (settings.prefixGtin as ISettingsOption<string>)?.data || '';
 
   const goods = refSelectors.selectByName<IGood>('good')?.data;
 
@@ -59,67 +63,99 @@ const RevisionGoodScreen = () => {
 
   const handleGetScannedObject = useCallback(
     (brc: string) => {
-      // if (doc?.head.isBindGood && doc?.lines?.find((l) => l.barcode === brc)) {
-      //   setScaner({
-      //     state: 'error',
-      //     message: 'Баркод  уже добавлен',
-      //   });
-      //   return;
-      // }
-
       if (!doc) {
         return;
       }
+
+      if (isBlocked) {
+        return;
+      }
+
+      const line = lines?.find((i) => i.barcode === brc);
+      const remItem = getBrc(brc, prefixGtin, goodRemains);
 
       const scannedGood = {
         id: generateId(),
         barcode: brc,
       };
 
-      const line = doc.lines.find((i) => i.barcode === brc);
-
-      const remItem = goodRemains[brc];
-
       if (remItem) {
-        setScaner({ state: line ? 'error' : 'found' });
+        if (line) {
+          setScaner({
+            state: 'error',
+            message: `Цена: ${line.price || 0} р., остаток: ${line.remains || 0}\n\nТовар уже добавлен`,
+          });
+          setScannedObject({
+            ...scannedGood,
+            good: { id: remItem.good.id, name: remItem.good.name },
+            price: line.price || 0,
+            remains: line.remains || 0,
+          });
+          setIsButtonBlocked(true);
+          return;
+        }
+
+        setScaner({ state: 'found' });
         setScannedObject({
           ...scannedGood,
           good: { id: remItem.good.id, name: remItem.good.name },
           price: remItem.remains?.length ? remItem.remains[0].price : 0,
           remains: remItem.remains?.length ? remItem.remains?.[0].q : 0,
+          barcode: remItem.good.barcode || brc || '',
         });
-
-        if (line) {
-          setIsButtonBlocked(true);
-        }
-
+        setIsButtonBlocked(false);
         return;
-      } else {
-        const good = goods.find((i) => i.barcode === brc);
-
-        if (good) {
-          setScaner({ state: line ? 'error' : 'found' });
-
-          setScannedObject({ ...scannedGood, good: { id: good.id, name: good.name }, price: good.price || 0 });
-
-          if (line) {
-            setIsButtonBlocked(true);
-          }
-        } else {
-          if (line) {
-            setIsButtonBlocked(true);
-            setScannedObject({
-              ...scannedGood,
-              good: { id: unknownGood.id, name: line.good?.name || unknownGood.name },
-            });
-          } else {
-            setScannedObject({ ...scannedGood, good: { id: unknownGood.id, name: unknownGood.name } });
-          }
-          setScaner({ state: 'error' });
-        }
       }
+
+      const refGood = goods.find((i) => i.barcode === brc);
+      if (refGood) {
+        if (line) {
+          setScaner({ state: 'error', message: `Цена: ${line.price || 0} р.\n\nТовар уже добавлен` });
+          setScannedObject({
+            ...scannedGood,
+            good: { id: refGood.id, name: refGood.name },
+            price: line.price || 0,
+          });
+          setIsButtonBlocked(true);
+          return;
+        }
+
+        setScaner({ state: 'found' });
+        setScannedObject({
+          ...scannedGood,
+          good: { id: refGood.id, name: refGood.name },
+          barcode: brc,
+          price: refGood.price || 0,
+        });
+        setIsButtonBlocked(false);
+        return;
+      }
+
+      if (line) {
+        setIsButtonBlocked(false);
+        setScannedObject({
+          ...scannedGood,
+          good: { id: line.good?.id || unknownGood.id, name: line.good?.name || unknownGood.name },
+          price: line.price || 0,
+        });
+        setScaner({
+          state: 'error',
+          message: line.withGood
+            ? `Штрихкод ${brc} уже привязан\n${line.good?.name || ''}\nЦена: ${line.price || 0} р.`
+            : `Штрихкод ${brc} уже добавлен`,
+        });
+        return;
+      }
+
+      setScannedObject({
+        ...scannedGood,
+        good: { id: unknownGood.id, name: unknownGood.name },
+        barcode: brc,
+      });
+      setScaner({ state: 'error', message: 'Товар не найден' });
+      setIsButtonBlocked(false);
     },
-    [doc, goodRemains, goods],
+    [doc, goodRemains, goods, isBlocked, lines, prefixGtin],
   );
 
   const [currentLineId, setCurrentLineId] = useState('');
@@ -147,7 +183,7 @@ const RevisionGoodScreen = () => {
         return;
       }
 
-      if (!doc) {
+      if (!doc || isBlocked) {
         return;
       }
       if (isWithGood) {
@@ -177,7 +213,7 @@ const RevisionGoodScreen = () => {
 
       setScaner({ state: 'init' });
     },
-    [scannedObject, doc, navigation, lines, dispatch, docId],
+    [scannedObject, doc, isBlocked, navigation, lines, dispatch, docId],
   );
 
   const handleClearScaner = () => {

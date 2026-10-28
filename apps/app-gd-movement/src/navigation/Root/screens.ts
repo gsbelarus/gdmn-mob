@@ -3,6 +3,8 @@ import { SelectRefItemScreen } from '../../components/SelectRefItemScreen';
 import { DocListScreen, DocEditScreen, DocViewScreen, DocLineScreen, SelectRemainsScreen } from '../../screens/Doc';
 
 import ScanBarcodeScreen from '../../screens/Doc/ScanBarcodeScreen';
+import InvoiceScanBarcodeScreen from '../../screens/Invoice/ScanBarcodeScreen';
+import WaybillScanBarcodeScreen from '../../screens/Waybill/ScanBarcodeScreen';
 
 import { ContactListScreen, GoodListScreen, GoodLineScreen } from '../../screens/Remains';
 
@@ -11,15 +13,13 @@ import { ScanListScreen, ScanViewScreen, ScanEditScreen, ScanGoodScreen } from '
 import { RevisionGoodScreen, RevisionEditScreen, RevisionListScreen, RevisionViewScreen } from '../../screens/Revision';
 
 import { InvoiceListScreen, InvoiceViewScreen, InvoiceEditScreen, InvoiceLineScreen } from '../../screens/Invoice';
-
+import { WaybillListScreen, WaybillViewScreen, WaybillEditScreen } from '../../screens/Waybill';
 import {
   CellMovementListScreen,
   CellMovementViewScreen,
   CellMovementEditScreen,
   SelectCellScreen,
 } from '../../screens/CellsMovement';
-
-import { WaybillListScreen, WaybillViewScreen, WaybillEditScreen } from '../../screens/Waybill';
 
 export const docScreens = {
   DocEdit: { title: 'Документ', component: DocEditScreen },
@@ -71,7 +71,7 @@ export const invoiceScreens = {
   InvoiceLine: { title: 'Позиция счёт-заказа', component: InvoiceLineScreen },
   SelectRefItem: { title: 'Выбор из справочника', component: SelectRefItemScreen },
   // SelectRemainsItem: { title: 'Выбор из остатков', component: SelectRemainsScreen },
-  ScanBarcode: { title: 'Сканер', component: ScanBarcodeScreen },
+  ScanBarcode: { title: 'Сканер', component: InvoiceScanBarcodeScreen },
 };
 
 export const invoiceListScreens = {
@@ -81,7 +81,7 @@ export const invoiceListScreens = {
 export const waybillScreens = {
   WaybillEdit: { title: 'ЭТТН', component: WaybillEditScreen },
   WaybillView: { title: '', component: WaybillViewScreen },
-  ScanBarcode: { title: 'Сканер', component: ScanBarcodeScreen },
+  ScanBarcode: { title: 'Сканер', component: WaybillScanBarcodeScreen },
 };
 
 export const waybillListScreens = {

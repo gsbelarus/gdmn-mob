@@ -38,9 +38,9 @@ export const InvoiceEditScreen = () => {
 
   const documents = useFilteredDocList<IInvoiceDocument>('invoice');
 
-  const scanType = refSelectors
+  const invoiceType = refSelectors
     .selectByName<IReference<IDocumentType>>('documentType')
-    ?.data.find((t) => t.name === 'scan');
+    ?.data.find((t) => t.name === 'invoice');
 
   const doc = useMemo(() => documents?.find((e) => e.id === id), [documents, id]);
 
@@ -89,9 +89,9 @@ export const InvoiceEditScreen = () => {
 
   useEffect(() => {
     if (screenState === 'saving') {
-      if (!scanType) {
+      if (!invoiceType) {
         setScreenState('idle');
-        return Alert.alert('Ошибка!', 'Тип документа для сканирования не найден', [{ text: 'OK' }]);
+        return Alert.alert('Ошибка!', 'Тип документа инвентаризации марок не найден', [{ text: 'OK' }]);
       }
       if (!docNumber || !docDate || !docDepart) {
         setScreenState('idle');
@@ -104,7 +104,7 @@ export const InvoiceEditScreen = () => {
       if (!id) {
         const newDoc: IInvoiceDocument = {
           id: docId,
-          documentType: scanType,
+          documentType: invoiceType,
           number: docNumber && docNumber.trim(),
           documentDate: docDate,
           status: 'DRAFT',
@@ -119,7 +119,7 @@ export const InvoiceEditScreen = () => {
 
         dispatch(documentActions.addDocument(newDoc));
 
-        navigation.dispatch(StackActions.replace('ScanView', { id: newDoc.id }));
+        navigation.dispatch(StackActions.replace('InvoiceView', { id: newDoc.id }));
       } else {
         if (!doc) {
           setScreenState('idle');
@@ -134,7 +134,7 @@ export const InvoiceEditScreen = () => {
           number: docNumber && docNumber.trim(),
           status: docStatus || 'DRAFT',
           documentDate: docDate,
-          documentType: scanType,
+          documentType: invoiceType,
           errorMessage: undefined,
           head: {
             ...doc.head,
@@ -151,7 +151,7 @@ export const InvoiceEditScreen = () => {
         navigation.navigate('InvoiceView', { id });
       }
     }
-  }, [scanType, docNumber, docDate, id, docComment, dispatch, navigation, doc, docStatus, screenState, docDepart]);
+  }, [invoiceType, docNumber, docDate, id, docComment, dispatch, navigation, doc, docStatus, screenState, docDepart]);
 
   const renderRight = useCallback(
     () => <SaveButton onPress={() => setScreenState('saving')} disabled={screenState === 'saving'} />,

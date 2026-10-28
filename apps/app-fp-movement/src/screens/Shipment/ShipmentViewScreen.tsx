@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { View, TouchableHighlight, TextInput, Keyboard, StyleProp, ViewStyle } from 'react-native';
 import { RouteProp, useIsFocused, useNavigation, useRoute, useTheme } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { Audio } from 'expo-av';
 
 import {
   appActions,
@@ -31,6 +30,8 @@ import {
   SimpleDialog,
   DateInfo,
   PackageButton,
+  CloseButton,
+  DeleteButton,
 } from '@lib/mobile-ui';
 
 import {
@@ -55,9 +56,10 @@ import { barcodeSettings, IBox, IOrderDocument, IShipmentDocument, IShipmentLine
 
 import { ShipmentStackParamList } from '../../navigation/Root/types';
 
-import { getStatusColor, shipmentLineTypes, ONE_SECOND_IN_MS } from '../../utils/constants';
+import { useScanSound } from '../../utils/useScanSound';
+import { getStatusColor, shipmentLineTypes, SCAN_REFOCUS_DELAY_MS } from '../../utils/constants';
 
-import { IBarcode, IGood, IRemains, IRemGood } from '../../store/app/types';
+import { IBarcode, IGood, ILabel, IRemains, IRemGood } from '../../store/app/types';
 import { useSelector as useFpSelector, fpMovementActions, useDispatch as useFpDispatch } from '../../store/index';
 
 import {
@@ -70,12 +72,25 @@ import {
   getRemGoodListByContact,
   getUpdatedLine,
 } from '../../utils/helpers';
+import {
+  buildMarkingLineFields,
+  getMarkingNotFoundMessage,
+  isLegacyNumericBarcode,
+  isMarkCodeDuplicate,
+  isMarkingCode,
+  resolveMarkingScan,
+  shouldFallbackToLegacyBarcode,
+} from '../../utils/markingCodeHelpers';
 import ViewTotal from '../../components/ViewTotal';
 import QuantDialog from '../../components/QuantDialog';
 import BoxDialog from '../../components/BoxDialog';
 import BarcodeDialog from '../../components/BarcodeDialog';
+import { useLineDeleteMode } from '../../utils/useLineDeleteMode';
 
 const keyExtractor = (item: IShipmentLine | ITempLine) => item.id;
+
+const EMPTY_LABELS: ILabel[] = [];
+
 const ShipmentViewScreen = () => {
   const { colors } = useTheme();
   const showActionSheet = useActionSheet();
@@ -100,7 +115,7 @@ const ShipmentViewScreen = () => {
 
   const shipment = docSelectors.selectByDocId<IShipmentDocument>(id);
   const shipmentLines = useMemo(
-    () => shipment?.lines?.sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)) || [],
+    () => (shipment?.lines ? [...shipment.lines].sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)) : []),
     [shipment?.lines],
   );
 
@@ -110,6 +125,12 @@ const ShipmentViewScreen = () => {
   const tempOrderLines = tempOrder?.lines?.filter((i) => i.weight > 0) as ITempLine[];
 
   const isBlocked = shipment?.status !== 'DRAFT';
+
+  const allowLineDelete = Boolean(settings.allowLineDelete?.data);
+  const { delList, isDelList, handleDeleteSelectedLines, getLineHandlers, clearSelection } = useLineDeleteMode({
+    allowLineDelete,
+    isBlocked,
+  });
 
   const isCattle = useMemo(
     () => (shipmentLines?.length > 0 ? shipmentLines?.[0].good.isCattle : undefined),
@@ -158,6 +179,7 @@ const ShipmentViewScreen = () => {
   }, []);
 
   const goods = refSelectors.selectByName<IGood>('good').data;
+  const labels = refSelectors.selectByName<ILabel>('label')?.data ?? EMPTY_LABELS;
 
   const goodBarcodeSettings = Object.entries(settings).reduce((prev: barcodeSettings, [idx, item]) => {
     if (item && item.group?.id !== 'base' && typeof item.data === 'number') {
@@ -179,7 +201,7 @@ const ShipmentViewScreen = () => {
 
   const remainsUse = Boolean(settings.remainsUse?.data);
 
-  const remains = refSelectors.selectByName<IRemains>('remains')?.data[0];
+  const remains = refSelectors.selectByName<IRemains>('remains')?.data?.[0];
 
   const goodRemains = useMemo<IRemGood[]>(() => {
     return shipment?.head?.fromDepart?.id && isFocused && remains
@@ -187,11 +209,17 @@ const ShipmentViewScreen = () => {
       : [];
   }, [goods, remains, shipment?.head?.fromDepart?.id, isFocused]);
 
-  const sound = Audio.Sound.createAsync(require('../../../assets/ok.wav'));
+  const playSound = useScanSound(require('../../../assets/ok.wav'));
 
-  const playSound = useCallback(async () => {
-    (await sound).sound.playAsync();
-  }, [sound]);
+  const [scanned, setScanned] = useState(false);
+  const ref = useRef<TextInput>(null);
+
+  const scheduleScannerFocus = useCallback(() => {
+    setTimeout(() => {
+      ref.current?.focus();
+      ref.current?.clear();
+    }, SCAN_REFOCUS_DELAY_MS);
+  }, []);
 
   const handleShowDialog = () => {
     setVisibleDialog(true);
@@ -394,6 +422,59 @@ const ShipmentViewScreen = () => {
     );
   }, [dispatch, docDispatch, id, tempOrder]);
 
+  const restoreTempLine = useCallback(
+    (shipmentLine: IShipmentLine) => {
+      const tempLine = tempOrder?.lines?.find((i) => shipmentLine.good.id === i.good.id);
+      const good = scanUnit ? goods?.find((i) => shipmentLine.good.id === i.id) : undefined;
+
+      if (tempLine && tempOrder) {
+        fpDispatch(
+          fpMovementActions.updateTempOrderLine({
+            docId: tempOrder.id,
+            line:
+              scanUnit && good && shipmentLine.quantity
+                ? { ...tempLine, weight: round(tempLine.weight + shipmentLine.quantity, 3) }
+                : {
+                    ...tempLine,
+                    weight: round(
+                      tempLine.weight +
+                        (shipmentLine.good.unitWeight && shipmentLine.good.unitWeight !== 1
+                          ? round(shipmentLine.weight / shipmentLine.good.unitWeight, 3)
+                          : shipmentLine.weight),
+                      3,
+                    ),
+                  },
+          }),
+        );
+      }
+    },
+    [fpDispatch, goods, scanUnit, tempOrder],
+  );
+
+  const handleDeleteLines = useCallback(() => {
+    handleDeleteSelectedLines(() => {
+      delList.forEach((lineId) => {
+        const line = shipmentLines.find((l) => l.id === lineId);
+        if (line) {
+          restoreTempLine(line);
+        }
+      });
+      dispatch(documentActions.removeDocumentLines({ docId: id, lineIds: delList }));
+      clearSelection();
+      setScanned(false);
+      scheduleScannerFocus();
+    });
+  }, [
+    clearSelection,
+    delList,
+    dispatch,
+    handleDeleteSelectedLines,
+    id,
+    restoreTempLine,
+    scheduleScannerFocus,
+    shipmentLines,
+  ]);
+
   const hanldeCancelLastScan = useCallback(() => {
     if (shipmentLines?.length) {
       const shipmentLine = shipmentLines?.[0];
@@ -422,8 +503,9 @@ const ShipmentViewScreen = () => {
         );
       }
     }
-    handleFocus();
-  }, [dispatch, fpDispatch, goods, id, scanUnit, shipmentLines, tempOrder]);
+    setScanned(false);
+    scheduleScannerFocus();
+  }, [dispatch, fpDispatch, goods, id, scanUnit, scheduleScannerFocus, shipmentLines, tempOrder]);
 
   const handleSetNewBox = (newBox: IBox) => {
     setBox(newBox);
@@ -645,6 +727,8 @@ const ShipmentViewScreen = () => {
         ) : (
           <MenuButton actionsMenu={actionsMenu} disabled={screenState !== 'idle'} />
         )
+      ) : isDelList ? (
+        <DeleteButton onPress={handleDeleteLines} />
       ) : (
         <View style={styles.buttons}>
           {shipment?.status === 'DRAFT' && (
@@ -670,45 +754,47 @@ const ShipmentViewScreen = () => {
         </View>
       ),
     [
-      isBlocked,
-      shipment?.status,
-      screenState,
-      loading,
-      shipmentLines?.length,
       actionsMenu,
-      handleSaveDocument,
-      usePackage,
       box,
-      isScanerReader,
-      navigation,
+      handleDeleteLines,
+      handleSaveDocument,
       id,
+      isBlocked,
       isCurr,
+      isDelList,
+      isScanerReader,
+      loading,
+      navigation,
+      screenState,
+      shipment?.status,
+      shipmentLines?.length,
+      usePackage,
     ],
   );
 
   const renderLeft = useCallback(
-    () => (
-      <BackButton
-        onPress={() =>
-          isDashboard ? navigation.goBack() : navigation.navigate(isCurr ? 'CurrShipmentList' : 'ShipmentList')
-        }
-      />
-    ),
-    [isCurr, isDashboard, navigation],
+    () =>
+      isDelList ? (
+        <CloseButton onPress={clearSelection} />
+      ) : (
+        <BackButton
+          onPress={() =>
+            isDashboard ? navigation.goBack() : navigation.navigate(isCurr ? 'CurrShipmentList' : 'ShipmentList')
+          }
+        />
+      ),
+    [clearSelection, isCurr, isDashboard, isDelList, navigation],
   );
 
   useLayoutEffect(() => {
     navigation.setOptions({
       headerLeft: renderLeft,
       headerRight: renderRight,
+      title: isDelList ? `Выделено позиций: ${delList.length}` : '',
     });
-  }, [navigation, renderLeft, renderRight]);
+  }, [delList.length, isDelList, navigation, renderLeft, renderRight]);
 
   const [isDateVisible, setIsDateVisible] = useState(false);
-
-  const [scanned, setScanned] = useState(false);
-
-  const ref = useRef<TextInput>(null);
 
   const handleErrorMessage = useCallback((visible: boolean, text: string) => {
     if (visible) {
@@ -729,9 +815,171 @@ const ShipmentViewScreen = () => {
         return;
       }
 
-      if (!brc.match(/^-{0,1}\d+$/)) {
-        handleErrorMessage(visibleDialog, 'Штрих-код не определён. Повторите сканирование!');
+      if (isDelList) {
         return;
+      }
+
+      if (!isLegacyNumericBarcode(brc)) {
+        const markingResult = resolveMarkingScan({
+          rawCode: brc,
+          labels,
+          goods,
+          goodRemains,
+          remainsUse,
+        });
+
+        if (markingResult.kind === 'not_found') {
+          if (!shouldFallbackToLegacyBarcode(brc, markingResult)) {
+            const message = isMarkingCode(brc)
+              ? getMarkingNotFoundMessage(markingResult.reason)
+              : 'Штрих-код не определён. Повторите сканирование!';
+            handleErrorMessage(visibleDialog, message);
+            setScanned(false);
+            return;
+          }
+        } else if (markingResult.kind === 'found') {
+          const { good: lineGood, markCode, label, isRightWeight } = markingResult;
+          const isGoodCattle = lineGood.isCattle;
+
+          if (isCattle === 1 && !isGoodCattle) {
+            handleErrorMessage(visibleDialog, 'Товар не относится к группе КРС!');
+            return;
+          } else if (isCattle === 0 && isGoodCattle) {
+            handleErrorMessage(visibleDialog, 'Товар относится к группе КРС!');
+            return;
+          }
+
+          if (!isRightWeight) {
+            handleErrorMessage(visibleDialog, 'Вес товара превышает вес в остатках!');
+            return;
+          }
+
+          if (isMarkCodeDuplicate(markCode, shipmentLines)) {
+            handleErrorMessage(visibleDialog, 'Данный код маркировки уже добавлен!');
+            return;
+          }
+
+          const tempLine = tempOrder?.lines?.find((i) => lineGood.id === i.good.id);
+
+          const shipmentLine: IShipmentLine = {
+            ...buildMarkingLineFields({
+              label,
+              labels,
+              good: lineGood,
+              sortOrder: (shipmentLines?.length || 0) + 1,
+              remainsUse,
+            }),
+            id: generateId(),
+            quantity: 0,
+          };
+
+          const boxLine = box
+            ? shipmentLines?.find(
+                (i) =>
+                  i.box?.id === box?.id &&
+                  (i.good.id !== shipmentLine.good.id || i.numReceived !== shipmentLine.numReceived),
+              )
+            : null;
+
+          if (boxLine) {
+            handleErrorMessage(
+              visibleDialog,
+              'Нельзя поместить разные товары или товары с разными партиями в одну коробку!',
+            );
+            return;
+          }
+
+          const newLine = box ? { ...shipmentLine, box } : shipmentLine;
+
+          if (tempLine && tempOrder) {
+            const markingWeight = shipmentLine.weight;
+            const newTempLine = {
+              ...tempLine,
+              weight: round(
+                lineGood.unitWeight && lineGood.unitWeight !== 1
+                  ? tempLine.weight - round(markingWeight / lineGood.unitWeight, 3)
+                  : tempLine.weight - newLine.weight,
+                3,
+              ),
+            };
+            if (newTempLine.weight > 0) {
+              fpDispatch(
+                fpMovementActions.updateTempOrderLine({
+                  docId: tempOrder?.id,
+                  line: newTempLine,
+                }),
+              );
+              dispatch(documentActions.addDocumentLine({ docId: id, line: newLine }));
+              playSound();
+            } else if (newTempLine.weight === 0) {
+              fpDispatch(
+                fpMovementActions.updateTempOrderLine({
+                  docId: tempOrder?.id,
+                  line: newTempLine,
+                }),
+              );
+              dispatch(documentActions.addDocumentLine({ docId: id, line: newLine }));
+              playSound();
+            } else {
+              const currTempLine = tempOrder?.lines?.find((i) => i.id === newTempLine.id);
+              const orderLineWeight = order?.lines?.find((i) => i.good.id === lineGood.id)?.weight;
+              const delta = orderLineWeight ? round(orderLineWeight * limitDelta) : 0;
+              if (limitDelta && delta && currTempLine?.weight && Math.abs(newTempLine.weight) <= delta) {
+                dispatch(documentActions.addDocumentLine({ docId: id, line: newLine }));
+                fpDispatch(
+                  fpMovementActions.updateTempOrderLine({
+                    docId: tempOrder?.id,
+                    line: newTempLine,
+                  }),
+                );
+                playSound();
+              } else {
+                alertWithSoundMulti(
+                  'Данное количество превышает количество в заявке.',
+                  'Добавить позицию?',
+                  () => {
+                    dispatch(documentActions.addDocumentLine({ docId: id, line: newLine }));
+                    fpDispatch(
+                      fpMovementActions.updateTempOrderLine({
+                        docId: tempOrder?.id,
+                        line: newTempLine,
+                      }),
+                    );
+                    playSound();
+                  },
+                  handleFocus,
+                );
+              }
+            }
+          } else {
+            alertWithSoundMulti(
+              'Данный товар отсутствует в позициях заявки.',
+              'Добавить позицию?',
+              () => {
+                dispatch(documentActions.addDocumentLine({ docId: id, line: newLine }));
+                playSound();
+              },
+              handleFocus,
+            );
+          }
+
+          if (visibleDialog) {
+            setVisibleDialog(false);
+            setErrorMessage('');
+            setBarcode('');
+          } else {
+            setScanned(false);
+          }
+
+          handleFocus();
+
+          if (addPalletQuantPack && newLine.weight >= goodBarcodeSettings?.boxWeight) {
+            setIsPack(false);
+            setVisibleQuantPackDialog(true);
+          }
+
+          return;
+        }
       }
 
       if (scanUnit && brc.length === 13) {
@@ -971,7 +1219,9 @@ const ShipmentViewScreen = () => {
 
     [
       shipment,
+      isDelList,
       scanUnit,
+      labels,
       minBarcodeLength,
       maxBarcodeLength,
       goodBarcodeSettings,
@@ -1009,13 +1259,9 @@ const ShipmentViewScreen = () => {
 
   useEffect(() => {
     if (!visibleDialog && !scanned && ref?.current) {
-      ref?.current &&
-        setTimeout(() => {
-          ref.current?.focus();
-          ref.current?.clear();
-        }, ONE_SECOND_IN_MS);
+      scheduleScannerFocus();
     }
-  }, [scanned, ref, visibleDialog]);
+  }, [scanned, ref, scheduleScannerFocus, visibleDialog]);
 
   useEffect(() => {
     if (screenState === 'sent' || screenState === 'deleted' || screenState === 'copied') {
@@ -1065,16 +1311,20 @@ const ShipmentViewScreen = () => {
 
   const renderShipmentItem = useCallback(
     ({ item }: { item: IShipmentLine }) => {
+      const handlers = getLineHandlers(item.id, () => handlePressLine(item.weight));
+
       return (
         <ListItemLine
-          // key={item.id}
           readonly={
-            shipment?.status !== 'DRAFT' ||
-            scanUnit ||
-            item?.sortOrder !== shipmentLines?.length ||
-            Boolean(item.scannedBarcode)
+            !isDelList &&
+            (shipment?.status !== 'DRAFT' ||
+              scanUnit ||
+              item?.sortOrder !== shipmentLines?.length ||
+              Boolean(item.scannedBarcode))
           }
-          onPress={() => handlePressLine(item.weight)}
+          checked={handlers.checked}
+          onPress={handlers.onPress}
+          onLongPress={handlers.onLongPress}
         >
           <View style={styles.details}>
             <LargeText style={styles.textBold}>{item.good.name}</LargeText>
@@ -1104,7 +1354,7 @@ const ShipmentViewScreen = () => {
         </ListItemLine>
       );
     },
-    [handlePressLine, scanUnit, shipment?.status, shipmentLines?.length],
+    [getLineHandlers, handlePressLine, isDelList, scanUnit, shipment?.status, shipmentLines?.length],
   );
 
   const renderTempItem = useCallback(
@@ -1176,6 +1426,7 @@ const ShipmentViewScreen = () => {
         title={shipment.documentType.description || ''}
         onPress={() => (isEditable ? handleEditShipmentHead() : setIsDateVisible(!isDateVisible))}
         editable={isEditable}
+        disabled={delList.length > 0}
         isBlocked={isBlocked}
       >
         <View style={styles.infoBlock}>
@@ -1203,7 +1454,7 @@ const ShipmentViewScreen = () => {
             estimatedItemSize={60}
             ItemSeparatorComponent={ItemSeparator}
             keyExtractor={keyExtractor}
-            extraData={[shipmentLines, isBlocked]}
+            extraData={[shipmentLines, isBlocked, delList, isDelList]}
             keyboardShouldPersistTaps={'always'}
           />
           <ViewTotal

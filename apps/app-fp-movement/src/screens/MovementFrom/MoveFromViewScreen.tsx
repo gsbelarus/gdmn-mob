@@ -19,6 +19,8 @@ import {
   navBackButton,
   SimpleDialog,
   DateInfo,
+  CloseButton,
+  DeleteButton,
 } from '@lib/mobile-ui';
 
 import { generateId, getDateString, keyExtractor, useSendDocs, sleep, useSendOneRefRequest } from '@lib/mobile-hooks';
@@ -29,7 +31,7 @@ import { FlashList } from '@shopify/flash-list';
 
 import { barcodeSettings, IMoveDocument, IMoveLine, IShipmentDocument } from '../../store/types';
 import { MoveFromStackParamList } from '../../navigation/Root/types';
-import { getStatusColor, lineTypes, ONE_SECOND_IN_MS } from '../../utils/constants';
+import { getStatusColor, lineTypes, SCAN_REFOCUS_DELAY_MS } from '../../utils/constants';
 
 import {
   alertWithSound,
@@ -45,6 +47,7 @@ import { IAddressStoreEntity, IBarcode, IGood, IRemains, IRemGood } from '../../
 
 import ViewTotal from '../../components/ViewTotal';
 import LineItem from '../../components/LineItem';
+import { useLineDeleteMode } from '../../utils/useLineDeleteMode';
 
 export interface IScanerObject {
   item?: IMoveLine;
@@ -73,7 +76,10 @@ export const MoveFromViewScreen = () => {
 
   const [visibleSendDialog, setVisibleSendDialog] = useState(false);
 
-  const lines = useMemo(() => doc?.lines?.sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)), [doc?.lines]);
+  const lines = useMemo(
+    () => (doc?.lines ? [...doc.lines].sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)) : undefined),
+    [doc?.lines],
+  );
   const lineSum = lines?.reduce(
     (sum, line) => {
       return { ...sum, quantPack: sum.quantPack + (line.quantPack || 0), weight: sum.weight + (line.weight || 0) };
@@ -85,6 +91,11 @@ export const MoveFromViewScreen = () => {
 
   const goods = refSelectors.selectByName<IGood>('good').data;
   const settings = useSelector((state) => state.settings?.data);
+  const allowLineDelete = Boolean(settings.allowLineDelete?.data);
+  const { delList, isDelList, handleDeleteSelectedLines, getLineHandlers, clearSelection } = useLineDeleteMode({
+    allowLineDelete,
+    isBlocked,
+  });
   const departs = refSelectors.selectByName<IAddressStoreEntity>('depart').data;
 
   const goodBarcodeSettings = Object.entries(settings).reduce((prev: barcodeSettings, [idx, item]) => {
@@ -122,6 +133,25 @@ export const MoveFromViewScreen = () => {
       ? getRemGoodListByContact(goods, remains[doc.head.fromDepart.id] /*, docList, doc.head.fromDepart.id*/)
       : [];
   }, [doc?.head?.fromDepart?.id, goods, isFocused, remains]);
+
+  const [scanned, setScanned] = useState(false);
+  const ref = useRef<TextInput>(null);
+
+  const scheduleScannerFocus = useCallback(() => {
+    setTimeout(() => {
+      ref.current?.focus();
+      ref.current?.clear();
+    }, SCAN_REFOCUS_DELAY_MS);
+  }, []);
+
+  const handleDeleteLines = useCallback(() => {
+    handleDeleteSelectedLines(() => {
+      dispatch(documentActions.removeDocumentLines({ docId: id, lineIds: delList }));
+      clearSelection();
+      setScanned(false);
+      scheduleScannerFocus();
+    });
+  }, [clearSelection, delList, dispatch, handleDeleteSelectedLines, id, scheduleScannerFocus]);
 
   const handleFocus = () => {
     ref?.current?.focus();
@@ -250,8 +280,9 @@ export const MoveFromViewScreen = () => {
     if (lastId) {
       dispatch(documentActions.removeDocumentLine({ docId: id, lineId: lastId }));
     }
-    handleFocus();
-  }, [dispatch, doc?.lines, id]);
+    setScanned(false);
+    scheduleScannerFocus();
+  }, [dispatch, doc?.lines, id, scheduleScannerFocus]);
 
   const sendDoc = useSendDocs(doc ? [doc] : [], doc ? [getDocToSend(doc)] : []);
 
@@ -367,6 +398,8 @@ export const MoveFromViewScreen = () => {
         ) : (
           <MenuButton actionsMenu={actionsMenu} disabled={screenState !== 'idle'} />
         )
+      ) : isDelList ? (
+        <DeleteButton onPress={handleDeleteLines} />
       ) : (
         <View style={styles.buttons}>
           <SendButton
@@ -380,15 +413,33 @@ export const MoveFromViewScreen = () => {
           <MenuButton actionsMenu={actionsMenu} disabled={screenState !== 'idle'} />
         </View>
       ),
-    [actionsMenu, doc?.status, id, isBlocked, isScanerReader, lines?.length, loading, navigation, screenState],
+    [
+      actionsMenu,
+      doc?.status,
+      handleDeleteLines,
+      id,
+      isBlocked,
+      isDelList,
+      isScanerReader,
+      lines?.length,
+      loading,
+      navigation,
+      screenState,
+    ],
+  );
+
+  const renderLeft = useCallback(
+    () => (isDelList ? <CloseButton onPress={clearSelection} /> : navBackButton()),
+    [clearSelection, isDelList],
   );
 
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerLeft: navBackButton,
+      headerLeft: renderLeft,
       headerRight: renderRight,
+      title: isDelList ? `Выделено позиций: ${delList.length}` : '',
     });
-  }, [navigation, renderRight]);
+  }, [delList.length, isDelList, navigation, renderLeft, renderRight]);
 
   //////////////////////// Не удалять //////////////////////////////////
   // const linesList = doc.lines?.reduce((sum: IMoveLine[], line) => {
@@ -439,23 +490,33 @@ export const MoveFromViewScreen = () => {
 
   const renderItem = useCallback(
     ({ item }: { item: IMoveLine }) => {
+      const handlers = getLineHandlers(item.id);
+
       return (
         <LineItem
           item={item}
-          disabled={doc?.status !== 'DRAFT' || item.sortOrder !== lines?.length || Boolean(item.scannedBarcode)}
+          checked={handlers.checked}
+          onPress={handlers.onPress}
+          onLongPress={handlers.onLongPress}
+          disabled={
+            !isDelList && (doc?.status !== 'DRAFT' || item.sortOrder !== lines?.length || Boolean(item.scannedBarcode))
+          }
           isFromAddressed={doc?.head.fromDepart?.isAddressStore}
           isToAddressed={doc?.head.toDepart?.isAddressStore}
         />
       );
     },
-    [doc?.head.fromDepart?.isAddressStore, doc?.head.toDepart?.isAddressStore, doc?.status, lines?.length],
+    [
+      doc?.head.fromDepart?.isAddressStore,
+      doc?.head.toDepart?.isAddressStore,
+      doc?.status,
+      getLineHandlers,
+      isDelList,
+      lines?.length,
+    ],
   );
 
   const [isDateVisible, setIsDateVisible] = useState(false);
-
-  const [scanned, setScanned] = useState(false);
-
-  const ref = useRef<TextInput>(null);
 
   const handleErrorMessage = useCallback((visible: boolean, text: string) => {
     if (visible) {
@@ -473,6 +534,10 @@ export const MoveFromViewScreen = () => {
       }
 
       if (doc?.status !== 'DRAFT') {
+        return;
+      }
+
+      if (isDelList) {
         return;
       }
 
@@ -576,6 +641,7 @@ export const MoveFromViewScreen = () => {
 
     [
       doc,
+      isDelList,
       minBarcodeLength,
       maxBarcodeLength,
       goodBarcodeSettings,
@@ -609,13 +675,9 @@ export const MoveFromViewScreen = () => {
 
   useEffect(() => {
     if (!visibleDialog && !scanned && ref?.current) {
-      ref?.current &&
-        setTimeout(() => {
-          ref.current?.focus();
-          ref.current?.clear();
-        }, ONE_SECOND_IN_MS);
+      scheduleScannerFocus();
     }
-  }, [scanned, ref, visibleDialog]);
+  }, [scanned, ref, scheduleScannerFocus, visibleDialog]);
 
   useEffect(() => {
     if (screenState === 'sent' || screenState === 'deleted' || screenState === 'copied') {
@@ -664,6 +726,7 @@ export const MoveFromViewScreen = () => {
         title={doc.head.subtype.name || ''}
         onPress={() => (isEditable ? handleEditDocHead() : setIsDateVisible(!isDateVisible))}
         editable={isEditable}
+        disabled={delList.length > 0}
         isBlocked={isBlocked}
       >
         <>
@@ -696,19 +759,28 @@ export const MoveFromViewScreen = () => {
             estimatedItemSize={60}
             ItemSeparatorComponent={ItemSeparator}
             keyExtractor={keyExtractor}
-            extraData={[lines, isBlocked]}
+            extraData={[lines, isBlocked, delList, isDelList]}
             keyboardShouldPersistTaps={'always'}
           />
           {doc?.lines?.length ? <ViewTotal quantPack={lineSum?.quantPack || 0} weight={lineSum?.weight || 0} /> : null}
         </>
       ) : lineType === 'last' && lines?.[0] ? (
         <View style={styles.spaceBetween}>
-          <LineItem
-            item={lines?.[0]}
-            disabled={doc?.status !== 'DRAFT' || Boolean(lines?.[0].scannedBarcode)}
-            isFromAddressed={doc?.head.fromDepart?.isAddressStore}
-            isToAddressed={doc?.head.toDepart?.isAddressStore}
-          />
+          {(() => {
+            const handlers = getLineHandlers(lines[0].id);
+
+            return (
+              <LineItem
+                item={lines[0]}
+                checked={handlers.checked}
+                onPress={handlers.onPress}
+                onLongPress={handlers.onLongPress}
+                disabled={!isDelList && (doc?.status !== 'DRAFT' || Boolean(lines[0].scannedBarcode))}
+                isFromAddressed={doc?.head.fromDepart?.isAddressStore}
+                isToAddressed={doc?.head.toDepart?.isAddressStore}
+              />
+            );
+          })()}
           {doc?.lines?.length ? <ViewTotal quantPack={lineSum?.quantPack || 0} weight={lineSum?.weight || 0} /> : null}
         </View>
       ) : null}

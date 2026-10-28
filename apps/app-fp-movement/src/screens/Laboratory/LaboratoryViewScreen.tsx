@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { View, TextInput, Keyboard, TouchableHighlight, StyleProp, ViewStyle } from 'react-native';
 import { RouteProp, useIsFocused, useNavigation, useRoute, useTheme } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { Audio } from 'expo-av';
 
 import { docSelectors, documentActions, refSelectors, useDispatch, useDocThunkDispatch, useSelector } from '@lib/store';
 import {
@@ -21,6 +20,8 @@ import {
   SaveDocument,
   SimpleDialog,
   DateInfo,
+  CloseButton,
+  DeleteButton,
 } from '@lib/mobile-ui';
 
 import { generateId, getDateString, keyExtractor, useSendDocs, sleep, useSendOneRefRequest } from '@lib/mobile-hooks';
@@ -31,7 +32,8 @@ import { FlashList } from '@shopify/flash-list';
 
 import { barcodeSettings, ILaboratoryDocument, ILaboratoryLine, IShipmentDocument } from '../../store/types';
 import { LaboratoryStackParamList } from '../../navigation/Root/types';
-import { getStatusColor, lineTypes, ONE_SECOND_IN_MS, ONE_T_IN_KG } from '../../utils/constants';
+import { useScanSound } from '../../utils/useScanSound';
+import { getStatusColor, lineTypes, SCAN_REFOCUS_DELAY_MS, ONE_T_IN_KG } from '../../utils/constants';
 
 import {
   alertWithSound,
@@ -47,6 +49,7 @@ import { IGood, IRemains, IRemGood } from '../../store/app/types';
 
 import ViewTotal from '../../components/ViewTotal';
 import LineItem from '../../components/LineItem';
+import { useLineDeleteMode } from '../../utils/useLineDeleteMode';
 
 export interface IScanerObject {
   item?: ILaboratoryLine;
@@ -67,7 +70,10 @@ export const LaboratoryViewScreen = () => {
   const doc = docSelectors.selectByDocId<ILaboratoryDocument>(id);
   const isScanerReader = useSelector((state) => state.settings?.data)?.scannerUse?.data;
 
-  const lines = useMemo(() => doc?.lines?.sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)), [doc?.lines]);
+  const lines = useMemo(
+    () => (doc?.lines ? [...doc.lines].sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)) : undefined),
+    [doc?.lines],
+  );
   const lineSum = lines?.reduce(
     (sum, line) => {
       return { ...sum, quantPack: sum.quantPack + (line.quantPack || 0), weight: sum.weight + (line.weight || 0) };
@@ -78,6 +84,11 @@ export const LaboratoryViewScreen = () => {
   const isBlocked = doc?.status !== 'DRAFT';
   const goods = refSelectors.selectByName<IGood>('good').data;
   const settings = useSelector((state) => state.settings?.data);
+  const allowLineDelete = Boolean(settings.allowLineDelete?.data);
+  const { delList, isDelList, handleDeleteSelectedLines, getLineHandlers, clearSelection } = useLineDeleteMode({
+    allowLineDelete,
+    isBlocked,
+  });
   const loading = useSelector((state) => state.app.loading);
   const goodBarcodeSettings = Object.entries(settings).reduce((prev: barcodeSettings, [idx, item]) => {
     if (item && item.group?.id !== 'base' && typeof item.data === 'number') {
@@ -119,11 +130,26 @@ export const LaboratoryViewScreen = () => {
   const [visibleWeightDialog, setVisibleWeightDialog] = useState(false);
   const [weight, setWeight] = useState('');
 
-  const sound = Audio.Sound.createAsync(require('../../../assets/ok.wav'));
+  const playSound = useScanSound(require('../../../assets/ok.wav'));
 
-  const playSound = useCallback(async () => {
-    (await sound).sound.playAsync();
-  }, [sound]);
+  const [scanned, setScanned] = useState(false);
+  const ref = useRef<TextInput>(null);
+
+  const scheduleScannerFocus = useCallback(() => {
+    setTimeout(() => {
+      ref.current?.focus();
+      ref.current?.clear();
+    }, SCAN_REFOCUS_DELAY_MS);
+  }, []);
+
+  const handleDeleteLines = useCallback(() => {
+    handleDeleteSelectedLines(() => {
+      dispatch(documentActions.removeDocumentLines({ docId: id, lineIds: delList }));
+      clearSelection();
+      setScanned(false);
+      scheduleScannerFocus();
+    });
+  }, [clearSelection, delList, dispatch, handleDeleteSelectedLines, id, scheduleScannerFocus]);
 
   const handleFocus = () => {
     ref?.current?.focus();
@@ -275,8 +301,9 @@ export const LaboratoryViewScreen = () => {
         dispatch(documentActions.removeDocumentLine({ docId: id, lineId: lines[0].id }));
       }
     }
-    handleFocus();
-  }, [dispatch, id, lines]);
+    setScanned(false);
+    scheduleScannerFocus();
+  }, [dispatch, id, lines, scheduleScannerFocus]);
 
   const [visibleSendDialog, setVisibleSendDialog] = useState(false);
 
@@ -384,6 +411,8 @@ export const LaboratoryViewScreen = () => {
         ) : (
           <MenuButton actionsMenu={actionsMenu} disabled={screenState !== 'idle'} />
         )
+      ) : isDelList ? (
+        <DeleteButton onPress={handleDeleteLines} />
       ) : (
         <View style={styles.buttons}>
           {doc?.status === 'DRAFT' && <SaveDocument onPress={handleSaveDocument} disabled={screenState !== 'idle'} />}
@@ -401,9 +430,11 @@ export const LaboratoryViewScreen = () => {
     [
       actionsMenu,
       doc?.status,
+      handleDeleteLines,
       handleSaveDocument,
       id,
       isBlocked,
+      isDelList,
       isScanerReader,
       lines?.length,
       loading,
@@ -412,12 +443,18 @@ export const LaboratoryViewScreen = () => {
     ],
   );
 
+  const renderLeft = useCallback(
+    () => (isDelList ? <CloseButton onPress={clearSelection} /> : navBackButton()),
+    [clearSelection, isDelList],
+  );
+
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerLeft: navBackButton,
+      headerLeft: renderLeft,
       headerRight: renderRight,
+      title: isDelList ? `Выделено позиций: ${delList.length}` : '',
     });
-  }, [navigation, renderRight]);
+  }, [delList.length, isDelList, navigation, renderLeft, renderRight]);
 
   const [lineType, setLineType] = useState(lineTypes[1].id);
 
@@ -450,23 +487,25 @@ export const LaboratoryViewScreen = () => {
 
   const renderItem = useCallback(
     ({ item }: { item: ILaboratoryLine }) => {
+      const handlers = getLineHandlers(item.id, () => setVisibleWeightDialog(true));
+
       return (
         <LineItem
           item={item}
-          disabled={doc?.status !== 'DRAFT' || item.sortOrder !== lines?.length || Boolean(item.scannedBarcode)}
-          onPress={() => setVisibleWeightDialog(true)}
+          checked={handlers.checked}
+          onPress={handlers.onPress}
+          onLongPress={handlers.onLongPress}
+          disabled={
+            !isDelList && (doc?.status !== 'DRAFT' || item.sortOrder !== lines?.length || Boolean(item.scannedBarcode))
+          }
           isLab={true}
         />
       );
     },
-    [doc?.status, lines?.length],
+    [doc?.status, getLineHandlers, isDelList, lines?.length],
   );
 
   const [isDateVisible, setIsDateVisible] = useState(false);
-
-  const [scanned, setScanned] = useState(false);
-
-  const ref = useRef<TextInput>(null);
 
   const handleErrorMessage = useCallback((visible: boolean, text: string) => {
     if (visible) {
@@ -484,6 +523,10 @@ export const LaboratoryViewScreen = () => {
       }
 
       if (doc?.status !== 'DRAFT') {
+        return;
+      }
+
+      if (isDelList) {
         return;
       }
 
@@ -566,6 +609,7 @@ export const LaboratoryViewScreen = () => {
 
     [
       doc,
+      isDelList,
       minBarcodeLength,
       maxBarcodeLength,
       goodBarcodeSettings,
@@ -594,13 +638,9 @@ export const LaboratoryViewScreen = () => {
 
   useEffect(() => {
     if (!visibleDialog && !scanned && ref?.current) {
-      ref?.current &&
-        setTimeout(() => {
-          ref.current?.focus();
-          ref.current?.clear();
-        }, ONE_SECOND_IN_MS);
+      scheduleScannerFocus();
     }
-  }, [scanned, ref, visibleDialog]);
+  }, [scanned, ref, scheduleScannerFocus, visibleDialog]);
 
   useEffect(() => {
     if (screenState === 'sent' || screenState === 'deleted' || screenState === 'copied') {
@@ -654,6 +694,7 @@ export const LaboratoryViewScreen = () => {
         title={doc.documentType.description || ''}
         onPress={() => (isEditable ? handleEditDocHead() : setIsDateVisible(!isDateVisible))}
         editable={isEditable}
+        disabled={delList.length > 0}
         isBlocked={isBlocked}
       >
         <View style={styles.infoBlock}>
@@ -680,19 +721,27 @@ export const LaboratoryViewScreen = () => {
             estimatedItemSize={60}
             ItemSeparatorComponent={ItemSeparator}
             keyExtractor={keyExtractor}
-            extraData={[lines, isBlocked]}
+            extraData={[lines, isBlocked, delList, isDelList]}
             keyboardShouldPersistTaps={'always'}
           />
           {lines?.length ? <ViewTotal quantPack={lineSum?.quantPack || 0} weight={lineSum?.weight || 0} /> : null}
         </>
       ) : lineType === 'last' && lines?.[0] ? (
         <View style={styles.spaceBetween}>
-          <LineItem
-            item={lines?.[0]}
-            disabled={doc?.status !== 'DRAFT' || Boolean(lines?.[0]?.scannedBarcode)}
-            onPress={() => setVisibleWeightDialog(true)}
-            isLab={true}
-          />
+          {(() => {
+            const handlers = getLineHandlers(lines[0].id, () => setVisibleWeightDialog(true));
+
+            return (
+              <LineItem
+                item={lines[0]}
+                checked={handlers.checked}
+                onPress={handlers.onPress}
+                onLongPress={handlers.onLongPress}
+                disabled={!isDelList && (doc?.status !== 'DRAFT' || Boolean(lines[0]?.scannedBarcode))}
+                isLab={true}
+              />
+            );
+          })()}
           {lines?.length ? <ViewTotal quantPack={lineSum?.quantPack || 0} weight={lineSum?.weight || 0} /> : null}
         </View>
       ) : null}

@@ -4,7 +4,7 @@ import { View } from 'react-native';
 import { useNavigation, RouteProp, useRoute, useIsFocused } from '@react-navigation/native';
 
 import { AppActivityIndicator, globalStyles, LargeText, navBackButton, ScanBarcode } from '@lib/mobile-ui';
-import { useSelector, refSelectors } from '@lib/store';
+import { useSelector, refSelectors, useDispatch, documentActions } from '@lib/store';
 
 import { IDocumentType, ISettingsOption } from '@lib/types';
 
@@ -17,17 +17,19 @@ import { IScannedObject } from '@lib/client-types';
 import { DocStackParamList } from '../../navigation/Root/types';
 import { IMovementLine, IMovementDocument } from '../../store/types';
 import { IGood, IMGoodData, IMGoodRemain, IRemains } from '../../store/app/types';
-import { getBrc, getRemGoodByContact } from '../../utils/helpers';
+import { getBrc, getDataMarkType, getRemGoodByContact } from '../../utils/helpers';
 import { IBarcodeTypes, unknownGood } from '../../utils/constants';
-import { useSelector as useInvSelector } from '../../store';
+import { appInventoryActions, useSelector as useInvSelector } from '../../store';
 
 const ScanBarcodeScreen = () => {
   const docId = useRoute<RouteProp<DocStackParamList, 'ScanBarcode'>>().params?.docId;
   const navigation = useNavigation<StackNavigationProp<DocStackParamList, 'ScanBarcode'>>();
+  const dispatch = useDispatch();
   const settings = useSelector((state) => state.settings?.data);
 
   const showZeroRemains = settings?.showZeroRemains?.data;
   const isInputQuantity = settings?.quantityInput?.data;
+  const lineConfirm = settings?.lineConfirm?.data;
 
   const prefixGtin = (settings.prefixGtin as ISettingsOption<string>)?.data || '';
   const prefixISN = (settings.prefixISN as ISettingsOption<string>)?.data || '';
@@ -55,6 +57,12 @@ const ScanBarcodeScreen = () => {
   }, [docId, navigation]);
 
   const document = useSelector((state) => state.documents.list).find((item) => item.id === docId) as IMovementDocument;
+
+  const lines = useMemo(
+    () => document?.lines?.sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)),
+    [document?.lines],
+  );
+  const isBlocked = document?.status !== 'DRAFT';
 
   const goods = refSelectors.selectByName<IGood>('good')?.data;
   const remains = refSelectors.selectByName<IRemains>('remains')?.data[0];
@@ -91,6 +99,14 @@ const ScanBarcodeScreen = () => {
 
   const getScannedObject = useCallback(
     (brc: string, typeOk = true) => {
+      if (!document) {
+        return;
+      }
+
+      if (isBlocked) {
+        return;
+      }
+
       if (!brc) {
         return;
       }
@@ -103,47 +119,39 @@ const ScanBarcodeScreen = () => {
         return;
       }
 
+      const dataMarkType = getDataMarkType(brc, prefixGtin, prefixISN);
+
       let charFrom = 0;
       let charTo = weightSettingsWeightCode.data.length;
-      const regIsTypeDM = RegExp(`^.{0,1}${prefixGtin}\\d{13,14}${prefixISN}.{13}91.{1,4}92.{1,44}`, 'i');
 
-      if (brc.slice(0, 2) === prefixGtin || brc.substring(charFrom, charTo) !== weightSettingsWeightCode.data) {
+      let scannedObject: IMovementLine;
+
+      if (brc.substring(charFrom, charTo) !== weightSettingsWeightCode.data) {
         const remItem =
           getBrc(brc, prefixGtin, goodRemains, prefixISN) ||
           (documentType?.isRemains ? undefined : { good: { ...unknownGood, barcode: brc } });
 
-        // Находим товар из модели остатков по баркоду, если баркод не найден, то
-        //   если выбор из остатков, то undefined,
-        //   иначе подставляем unknownGood cо сканированным шк и добавляем в позицию документа
-
         if (!remItem) {
-          setScaner({ state: 'error', message: 'Товар не найден' });
+          setScaner({
+            state: 'error',
+            message: dataMarkType === '2' ? 'Товар не найден. Возможно отсканирован код УКЗ.' : 'Товар не найден',
+          });
           return;
         }
-        const scannedObject: IMovementLine = {
+
+        scannedObject = {
           good: { id: remItem.good.id, name: remItem.good.name },
           id: generateId(),
-          quantity: isInputQuantity ? 1 : 0,
+          quantity: dataMarkType === '1' ? 1 : isInputQuantity ? 1 : 0,
           price: remItem.remains?.length ? remItem.remains[0].price : 0,
           buyingPrice: remItem.remains?.length ? remItem.remains[0].buyingPrice : 0,
           remains: remItem.remains?.length ? remItem.remains?.[0].q : 0,
           barcode: remItem.good.barcode,
-          sortOrder: (document?.lines?.[0]?.sortOrder || 0) + 1,
+          sortOrder: (lines?.[0]?.sortOrder || 0) + 1,
           alias: remItem.good.alias || '',
           weightCode: remItem.good.weightCode?.trim() || '',
-          EID: regIsTypeDM.test(brc) && remItem.good.isMark ? brc : undefined,
+          EID: dataMarkType === '1' ? brc : undefined,
         };
-
-        if (scannedObject) {
-          navigation.navigate('DocLine', {
-            mode: 0,
-            docId,
-            item: scannedObject,
-          });
-          setScaner({ state: 'init' });
-        } else {
-          setScaner({ state: 'error' });
-        }
       } else {
         charFrom = charTo;
         charTo = charFrom + weightSettingsCountCode;
@@ -163,7 +171,7 @@ const ScanBarcodeScreen = () => {
           return;
         }
 
-        const scannedObject: IMovementLine = {
+        scannedObject = {
           good: { id: remItem.good.id, name: remItem.good.name },
           id: generateId(),
           quantity: qty,
@@ -171,30 +179,48 @@ const ScanBarcodeScreen = () => {
           buyingPrice: remItem.remains?.length ? remItem.remains[0].buyingPrice : 0,
           remains: remItem.remains?.length ? remItem.remains?.[0].q : 0,
           barcode: remItem.good.barcode,
-          sortOrder: (document?.lines?.[0]?.sortOrder || 0) + 1,
+          sortOrder: (lines?.[0]?.sortOrder || 0) + 1,
           alias: remItem.good.alias || '',
           weightCode: remItem.good.weightCode?.trim() || '',
-          EID: regIsTypeDM.test(brc) && remItem.good.isMark ? brc : undefined,
+          EID: dataMarkType === '1' ? brc : undefined,
         };
-
-        if (scannedObject) {
-          navigation.navigate('DocLine', {
-            mode: 0,
-            docId,
-            item: scannedObject,
-          });
-          setScaner({ state: 'init' });
-        } else {
-          setScaner({ state: 'error' });
-        }
       }
+
+      if (lineConfirm) {
+        navigation.navigate('DocLine', {
+          mode: 0,
+          docId,
+          item: scannedObject,
+        });
+      } else {
+        let newLine = { ...scannedObject, quantity: 1 };
+        if (scannedObject.good.id === 'unknown') {
+          const newLineId = `unknown_${generateId()}`;
+          dispatch(
+            appInventoryActions.addUnknownGood({
+              ...unknownGood,
+              ...scannedObject.good,
+              barcode: scannedObject.barcode,
+              id: newLineId,
+            }),
+          );
+          newLine = { ...newLine, good: { ...newLine.good, id: newLineId } };
+        }
+        dispatch(documentActions.addDocumentLine({ docId, line: newLine }));
+      }
+
+      setScaner({ state: 'init' });
     },
     [
+      dispatch,
       docId,
-      document?.lines,
+      document,
       documentType?.isRemains,
       goodRemains,
+      isBlocked,
       isInputQuantity,
+      lineConfirm,
+      lines,
       navigation,
       prefixGtin,
       prefixISN,

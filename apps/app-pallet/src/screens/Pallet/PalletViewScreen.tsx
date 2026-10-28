@@ -5,7 +5,15 @@ import { StackNavigationProp } from '@react-navigation/stack';
 
 import { Audio } from 'expo-av';
 
-import { appActions, docSelectors, documentActions, useDispatch, useDocThunkDispatch, useSelector } from '@lib/store';
+import {
+  appActions,
+  docSelectors,
+  documentActions,
+  refSelectors,
+  useDispatch,
+  useDocThunkDispatch,
+  useSelector,
+} from '@lib/store';
 import {
   MenuButton,
   useActionSheet,
@@ -48,12 +56,22 @@ import * as Print from 'expo-print';
 
 import { IPalletDocument, IPalletLine } from '../../store/types';
 import { PalletStackParamList } from '../../navigation/Root/types';
-import { getStatusColor, ONE_SECOND_IN_MS } from '../../utils/constants';
+import { getStatusColor, SCAN_REFOCUS_DELAY_MS } from '../../utils/constants';
 
 import { alertWithSound } from '../../utils/helpers';
+import {
+  isLegacyNumericBarcode,
+  isMarkingCode,
+  isPalletMarkDuplicate,
+  resolvePalletMark,
+} from '../../utils/markingCodeHelpers';
+import { ILabel } from '../../store/app/types';
 
 import { BarcodeImage } from './components/Barcode';
 import ViewTotal from './components/ViewTotal';
+
+const EMPTY_LABELS: ILabel[] = [];
+const EMPTY_LINES: IPalletLine[] = [];
 
 export const PalletViewScreen = () => {
   const showActionSheet = useActionSheet();
@@ -69,7 +87,10 @@ export const PalletViewScreen = () => {
 
   const id = useRoute<RouteProp<PalletStackParamList, 'PalletView'>>().params?.id;
   const doc = docSelectors.selectByDocId<IPalletDocument>(id);
-  const lines = useMemo(() => doc?.lines?.sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)), [doc?.lines]);
+  const lines = useMemo(
+    () => (doc?.lines ? [...doc.lines].sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)) : EMPTY_LINES),
+    [doc?.lines],
+  );
   const loading = useSelector((state) => state.app.loading);
 
   const isBlocked = doc?.status !== 'DRAFT';
@@ -77,12 +98,38 @@ export const PalletViewScreen = () => {
   const isScanerReader = useSelector((state) => state.settings?.data?.scannerUse?.data);
   const prefixErp = useSelector((state) => state.settings?.data?.prefixErp?.data);
   const prefixS = useSelector((state) => state.settings?.data?.prefixS?.data);
+  const labels = refSelectors.selectByName<ILabel>('label')?.data ?? EMPTY_LABELS;
 
-  const sound = Audio.Sound.createAsync(require('../../../assets/ok.wav'));
+  const soundRef = useRef<Audio.Sound | null>(null);
 
-  const playSound = useCallback(async () => {
-    (await sound).sound.playAsync();
-  }, [sound]);
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSound = async () => {
+      try {
+        const { sound } = await Audio.Sound.createAsync(require('../../../assets/ok.wav'));
+        if (cancelled) {
+          await sound.unloadAsync();
+          return;
+        }
+        soundRef.current = sound;
+      } catch {
+        // ошибка загрузки звука не должна мешать сканированию
+      }
+    };
+
+    loadSound().catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      soundRef.current?.unloadAsync();
+      soundRef.current = null;
+    };
+  }, []);
+
+  const playSound = useCallback(() => {
+    soundRef.current?.replayAsync();
+  }, []);
 
   const html = `
   <html>
@@ -318,7 +365,7 @@ export const PalletViewScreen = () => {
       checked={delList.includes(item.id)}
     >
       <View style={styles.details}>
-        <LargeText>{shortenString(item.barcode, 30)}</LargeText>
+        <LargeText>{shortenString(item.mark?.code || item.barcode, 30)}</LargeText>
       </View>
     </ListItemLine>
   );
@@ -351,6 +398,51 @@ export const PalletViewScreen = () => {
         return;
       }
 
+      if (!isLegacyNumericBarcode(brc)) {
+        const markingResult = resolvePalletMark(brc, labels);
+
+        if (markingResult.kind === 'not_found') {
+          handleErrorMessage(
+            visibleDialog,
+            isMarkingCode(brc) ? 'Код маркировки не найден' : 'Баркод неверного формата',
+          );
+          setScanned(false);
+          handleFocus();
+          return;
+        }
+
+        if (markingResult.kind === 'found') {
+          const { label, markCode } = markingResult;
+
+          if (isPalletMarkDuplicate(markCode, doc.lines)) {
+            handleErrorMessage(visibleDialog, 'Данный код маркировки уже добавлен');
+            setScanned(false);
+            handleFocus();
+            return;
+          }
+
+          const line: IPalletLine = {
+            id: generateId(),
+            barcode: '',
+            sortOrder: (lines?.[0]?.sortOrder || 0) + 1,
+            mark: { id: label.id, code: label.code },
+          };
+          dispatch(documentActions.addDocumentLine({ docId: id, line }));
+          playSound();
+
+          if (visibleDialog) {
+            setVisibleDialog(false);
+            setErrorMessage('');
+            setBarcode('');
+          } else {
+            setScanned(false);
+          }
+
+          handleFocus();
+          return;
+        }
+      }
+
       if (brc.slice(0, 2) !== prefixErp && brc.slice(0, 2) !== prefixS) {
         handleErrorMessage(visibleDialog, 'Баркод неверного формата');
 
@@ -381,7 +473,7 @@ export const PalletViewScreen = () => {
 
       handleFocus();
     },
-    [dispatch, doc, handleErrorMessage, id, isBlocked, lines, playSound, prefixErp, prefixS, visibleDialog],
+    [dispatch, doc, handleErrorMessage, id, isBlocked, labels, lines, playSound, prefixErp, prefixS, visibleDialog],
   );
 
   const handleSearchBarcode = () => {
@@ -400,7 +492,7 @@ export const PalletViewScreen = () => {
         setTimeout(() => {
           ref.current?.focus();
           ref.current?.clear();
-        }, ONE_SECOND_IN_MS);
+        }, SCAN_REFOCUS_DELAY_MS);
     }
   }, [scanned, ref]);
 

@@ -73,11 +73,26 @@ import {
 } from './src/navigation/Root/screens';
 
 import { PalletNavigator } from './src/navigation/PalletNavigator';
+import { OrderNavigator } from './src/navigation/OrderNavigator';
 
 const Root = () => {
   const { isInit, data: settings } = useSelector((state) => state.settings);
 
   const isAddressStore = useMemo(() => settings.addressStore?.data || false, [settings.addressStore?.data]);
+
+  const showOrders = useMemo(() => Boolean(settings.showOrders?.data), [settings.showOrders?.data]);
+
+  const orderNavItem: INavItem = useMemo(
+    () => ({
+      name: 'Order',
+      title: 'Заявки',
+      icon: 'clipboard-list-outline',
+      component: OrderNavigator,
+      showInDashboard: true,
+      sortNumber: 35,
+    }),
+    [],
+  );
 
   const navItems: INavItem[] = useMemo(
     () =>
@@ -129,6 +144,7 @@ const Root = () => {
               dashboardScreenName: 'ScanOrder',
               dashboardScreenParams: { isCurr: true },
             },
+            ...(showOrders ? [orderNavItem] : []),
             {
               name: 'FreeShipment',
               title: 'Отвес',
@@ -217,6 +233,7 @@ const Root = () => {
               dashboardScreenParams: { isCurr: true },
               sortNumber: 30,
             },
+            ...(showOrders ? [orderNavItem] : []),
             {
               name: 'FreeShipment',
               title: 'Отвес',
@@ -275,7 +292,7 @@ const Root = () => {
               sortNumber: 70,
             },
           ],
-    [isAddressStore],
+    [isAddressStore, orderNavItem, showOrders],
   );
 
   const docScreens = useMemo(

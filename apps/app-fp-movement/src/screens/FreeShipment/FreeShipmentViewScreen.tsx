@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { View, TextInput, Keyboard, TouchableHighlight, StyleProp, ViewStyle } from 'react-native';
 import { RouteProp, useIsFocused, useNavigation, useRoute, useTheme } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { Audio } from 'expo-av';
 
 import {
   // appActions,
@@ -30,6 +29,8 @@ import {
   SimpleDialog,
   DateInfo,
   PackageButton,
+  CloseButton,
+  DeleteButton,
 } from '@lib/mobile-ui';
 
 import {
@@ -49,7 +50,8 @@ import { FlashList } from '@shopify/flash-list';
 
 import { barcodeSettings, IBox, IFreeShipmentDocument, IFreeShipmentLine, IShipmentDocument } from '../../store/types';
 import { FreeShipmentStackParamList } from '../../navigation/Root/types';
-import { getStatusColor, lineTypes, ONE_SECOND_IN_MS } from '../../utils/constants';
+import { useScanSound } from '../../utils/useScanSound';
+import { getStatusColor, lineTypes, SCAN_REFOCUS_DELAY_MS } from '../../utils/constants';
 
 import {
   alertWithSound,
@@ -62,11 +64,21 @@ import {
   getRemGoodListByContact,
   getUpdatedLine,
 } from '../../utils/helpers';
-import { IBarcode, IGood, IRemains, IRemGood } from '../../store/app/types';
+import {
+  buildMarkingLineFields,
+  getMarkingNotFoundMessage,
+  isLegacyNumericBarcode,
+  isMarkCodeDuplicate,
+  isMarkingCode,
+  resolveMarkingScan,
+  shouldFallbackToLegacyBarcode,
+} from '../../utils/markingCodeHelpers';
+import { IBarcode, IGood, ILabel, IRemains, IRemGood } from '../../store/app/types';
 
 import ViewTotal from '../../components/ViewTotal';
 import QuantDialog from '../../components/QuantDialog';
 import LineItem from '../../components/LineItem';
+import { useLineDeleteMode } from '../../utils/useLineDeleteMode';
 import BoxDialog from '../../components/BoxDialog';
 import BarcodeDialog from '../../components/BarcodeDialog';
 
@@ -75,6 +87,8 @@ export interface IScanerObject {
   barcode: string;
   state: 'scan' | 'added' | 'notFound';
 }
+
+const EMPTY_LABELS: ILabel[] = [];
 
 export const FreeShipmentViewScreen = () => {
   const showActionSheet = useActionSheet();
@@ -89,8 +103,10 @@ export const FreeShipmentViewScreen = () => {
 
   const { colors } = useTheme();
 
-  const lines = useMemo(() => doc?.lines?.sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)) || [], [doc?.lines]);
-
+  const lines = useMemo(
+    () => (doc?.lines ? [...doc.lines].sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)) : []),
+    [doc?.lines],
+  );
   const lineSum = lines?.reduce(
     (sum, line) => {
       return {
@@ -106,8 +122,13 @@ export const FreeShipmentViewScreen = () => {
 
   const isBlocked = doc?.status !== 'DRAFT';
   const goods = refSelectors.selectByName<IGood>('good').data;
-
+  const labels = refSelectors.selectByName<ILabel>('label')?.data ?? EMPTY_LABELS;
   const settings = useSelector((state) => state.settings?.data);
+  const allowLineDelete = Boolean(settings.allowLineDelete?.data);
+  const { delList, isDelList, handleDeleteSelectedLines, getLineHandlers, clearSelection } = useLineDeleteMode({
+    allowLineDelete,
+    isBlocked,
+  });
   const loading = useSelector((state) => state.app.loading);
   const goodBarcodeSettings = Object.entries(settings).reduce((prev: barcodeSettings, [idx, item]) => {
     if (item && item.group?.id !== 'base' && typeof item.data === 'number') {
@@ -152,12 +173,27 @@ export const FreeShipmentViewScreen = () => {
 
   const [visibleBarcodeDialog, setVisibleBarcodeDialog] = useState<boolean>(false);
   const [brcLine, setBrcLine] = useState<IFreeShipmentLine | undefined>(undefined);
+  const [scanned, setScanned] = useState(false);
 
-  const sound = Audio.Sound.createAsync(require('../../../assets/ok.wav'));
+  const playSound = useScanSound(require('../../../assets/ok.wav'));
 
-  const playSound = useCallback(async () => {
-    (await sound).sound.playAsync();
-  }, [sound]);
+  const ref = useRef<TextInput>(null);
+
+  const scheduleScannerFocus = useCallback(() => {
+    setTimeout(() => {
+      ref.current?.focus();
+      ref.current?.clear();
+    }, SCAN_REFOCUS_DELAY_MS);
+  }, []);
+
+  const handleDeleteLines = useCallback(() => {
+    handleDeleteSelectedLines(() => {
+      dispatch(documentActions.removeDocumentLines({ docId: id, lineIds: delList }));
+      clearSelection();
+      setScanned(false);
+      scheduleScannerFocus();
+    });
+  }, [clearSelection, delList, dispatch, handleDeleteSelectedLines, id, scheduleScannerFocus]);
 
   const handleFocus = () => {
     ref?.current?.focus();
@@ -326,8 +362,9 @@ export const FreeShipmentViewScreen = () => {
         dispatch(documentActions.removeDocumentLine({ docId: id, lineId: lines[0].id }));
       }
     }
-    handleFocus();
-  }, [dispatch, id, lines]);
+    setScanned(false);
+    scheduleScannerFocus();
+  }, [dispatch, id, lines, scheduleScannerFocus]);
 
   const [visibleSendDialog, setVisibleSendDialog] = useState(false);
   const [visibleRequestDialog, setVisibleRequestDialog] = useState(false);
@@ -477,6 +514,8 @@ export const FreeShipmentViewScreen = () => {
         ) : (
           <MenuButton actionsMenu={actionsMenu} disabled={screenState !== 'idle'} />
         )
+      ) : isDelList ? (
+        <DeleteButton onPress={handleDeleteLines} />
       ) : (
         <View style={styles.buttons}>
           {doc?.status === 'DRAFT' && <SaveDocument onPress={handleSaveDocument} disabled={screenState !== 'idle'} />}
@@ -502,9 +541,11 @@ export const FreeShipmentViewScreen = () => {
       actionsMenu,
       box,
       doc?.status,
+      handleDeleteLines,
       handleSaveDocument,
       id,
       isBlocked,
+      isDelList,
       isScanerReader,
       lines?.length,
       loading,
@@ -514,12 +555,18 @@ export const FreeShipmentViewScreen = () => {
     ],
   );
 
+  const renderLeft = useCallback(
+    () => (isDelList ? <CloseButton onPress={clearSelection} /> : navBackButton()),
+    [clearSelection, isDelList],
+  );
+
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerLeft: navBackButton,
+      headerLeft: renderLeft,
       headerRight: renderRight,
+      title: isDelList ? `Выделено позиций: ${delList.length}` : '',
     });
-  }, [navigation, renderRight]);
+  }, [delList.length, isDelList, navigation, renderLeft, renderRight]);
 
   const handlePressLine = useCallback(
     (weight: number) => {
@@ -562,22 +609,25 @@ export const FreeShipmentViewScreen = () => {
 
   const renderItem = useCallback(
     ({ item }: { item: IFreeShipmentLine }) => {
+      const handlers = getLineHandlers(item.id, () => handlePressLine(item.weight));
+
       return (
         <LineItem
           item={item}
+          checked={handlers.checked}
+          onPress={handlers.onPress}
+          onLongPress={handlers.onLongPress}
           disabled={
-            doc?.status !== 'DRAFT' || scanUnit || item.sortOrder !== lines?.length || Boolean(item.scannedBarcode)
+            !isDelList &&
+            (doc?.status !== 'DRAFT' || scanUnit || item.sortOrder !== lines?.length || Boolean(item.scannedBarcode))
           }
-          onPress={() => handlePressLine(item.weight)}
         />
       );
     },
-    [doc?.status, handlePressLine, lines?.length, scanUnit],
+    [doc?.status, getLineHandlers, handlePressLine, isDelList, lines?.length, scanUnit],
   );
 
   const [isDateVisible, setIsDateVisible] = useState(false);
-
-  const [scanned, setScanned] = useState(false);
 
   const handleErrorMessage = useCallback((visible: boolean, text: string) => {
     if (visible) {
@@ -589,8 +639,6 @@ export const FreeShipmentViewScreen = () => {
     handleFocus();
   }, []);
 
-  const ref = useRef<TextInput>(null);
-
   const getScannedObject = useCallback(
     (brc: string) => {
       if (!doc) {
@@ -601,9 +649,96 @@ export const FreeShipmentViewScreen = () => {
         return;
       }
 
-      if (!brc.match(/^-{0,1}\d+$/)) {
-        handleErrorMessage(visibleDialog, 'Штрих-код не определён. Повторите сканирование!');
+      if (isDelList) {
         return;
+      }
+
+      if (!isLegacyNumericBarcode(brc)) {
+        const markingResult = resolveMarkingScan({
+          rawCode: brc,
+          labels,
+          goods,
+          goodRemains,
+          remainsUse,
+        });
+
+        if (markingResult.kind === 'not_found') {
+          if (!shouldFallbackToLegacyBarcode(brc, markingResult)) {
+            const message = isMarkingCode(brc)
+              ? getMarkingNotFoundMessage(markingResult.reason)
+              : 'Штрих-код не определён. Повторите сканирование!';
+            handleErrorMessage(visibleDialog, message);
+            setScanned(false);
+            return;
+          }
+        } else if (markingResult.kind === 'found') {
+          const { good: lineGood, markCode, label, isRightWeight } = markingResult;
+          const isGoodCattle = lineGood.isCattle;
+
+          if (isCattle === 1 && !isGoodCattle) {
+            handleErrorMessage(visibleDialog, 'Товар не относится к группе КРС!');
+            return;
+          } else if (isCattle === 0 && isGoodCattle) {
+            handleErrorMessage(visibleDialog, 'Товар относится к группе КРС!');
+            return;
+          }
+
+          if (!isRightWeight) {
+            handleErrorMessage(visibleDialog, 'Вес товара превышает вес в остатках!');
+            return;
+          }
+
+          if (isMarkCodeDuplicate(markCode, doc?.lines)) {
+            handleErrorMessage(visibleDialog, 'Данный код маркировки уже добавлен!');
+            return;
+          }
+
+          const newLine: IFreeShipmentLine = {
+            ...buildMarkingLineFields({
+              label,
+              labels,
+              good: lineGood,
+              sortOrder: (doc?.lines?.length || 0) + 1,
+              remainsUse,
+            }),
+            id: generateId(),
+          };
+
+          const boxLine = box
+            ? doc?.lines?.find(
+                (i) =>
+                  i.box?.id === box?.id && (i.good.id !== newLine.good.id || i.numReceived !== newLine.numReceived),
+              )
+            : null;
+
+          if (boxLine) {
+            handleErrorMessage(
+              visibleDialog,
+              'Нельзя поместить разные товары или товары с разными партиями в одну коробку!',
+            );
+            return;
+          }
+
+          dispatch(documentActions.addDocumentLine({ docId: id, line: box ? { ...newLine, box } : newLine }));
+          playSound();
+
+          if (visibleDialog) {
+            setVisibleDialog(false);
+            setErrorMessage('');
+            setBarcode('');
+          } else {
+            setScanned(false);
+          }
+
+          handleFocus();
+
+          if (addPalletQuantPack && newLine.weight >= goodBarcodeSettings?.boxWeight) {
+            setIsPack(false);
+            setVisibleQuantPackDialog(true);
+          }
+
+          return;
+        }
       }
 
       if (scanUnit && brc.length === 13) {
@@ -773,7 +908,9 @@ export const FreeShipmentViewScreen = () => {
 
     [
       doc,
+      isDelList,
       scanUnit,
+      labels,
       minBarcodeLength,
       maxBarcodeLength,
       goodBarcodeSettings,
@@ -805,13 +942,9 @@ export const FreeShipmentViewScreen = () => {
 
   useEffect(() => {
     if (!visibleDialog && !scanned && ref?.current) {
-      ref?.current &&
-        setTimeout(() => {
-          ref.current?.focus();
-          ref.current?.clear();
-        }, ONE_SECOND_IN_MS);
+      scheduleScannerFocus();
     }
-  }, [scanned, ref, visibleDialog]);
+  }, [scanned, ref, scheduleScannerFocus, visibleDialog]);
 
   useEffect(() => {
     if (screenState === 'sent' || screenState === 'deleted' || screenState === 'copied') {
@@ -866,6 +999,7 @@ export const FreeShipmentViewScreen = () => {
         isBlocked={isBlocked}
         onPress={() => (isEditable ? handleEditDocHead() : setIsDateVisible(!isDateVisible))}
         editable={isEditable}
+        disabled={delList.length > 0}
       >
         <View style={styles.infoBlock}>
           <MediumText>{doc.head.fromDepart?.name || ''}</MediumText>
@@ -891,18 +1025,26 @@ export const FreeShipmentViewScreen = () => {
             estimatedItemSize={60}
             ItemSeparatorComponent={ItemSeparator}
             keyExtractor={keyExtractor}
-            extraData={[lines, isBlocked]}
+            extraData={[lines, isBlocked, delList, isDelList]}
             keyboardShouldPersistTaps={'always'}
           />
           {lines?.length ? <ViewTotal quantPack={lineSum?.quantPack || 0} weight={lineSum?.weight || 0} /> : null}
         </>
       ) : lineType === 'last' && lines?.[0] ? (
         <View style={styles.spaceBetween}>
-          <LineItem
-            item={lines?.[0]}
-            disabled={doc?.status !== 'DRAFT' || scanUnit || Boolean(lines?.[0]?.scannedBarcode)}
-            onPress={() => handlePressLine(lines?.[0]?.weight)}
-          />
+          {(() => {
+            const handlers = getLineHandlers(lines[0].id, () => handlePressLine(lines[0].weight));
+
+            return (
+              <LineItem
+                item={lines[0]}
+                checked={handlers.checked}
+                onPress={handlers.onPress}
+                onLongPress={handlers.onLongPress}
+                disabled={!isDelList && (doc?.status !== 'DRAFT' || scanUnit || Boolean(lines[0]?.scannedBarcode))}
+              />
+            );
+          })()}
           {lines?.length ? <ViewTotal quantPack={lineSum?.quantPack || 0} weight={lineSum?.weight || 0} /> : null}
         </View>
       ) : null}

@@ -41,9 +41,10 @@ interface IProps {
   onSetLine: (value: IMovementLine) => void;
   onSetDisabledSave: (value: boolean) => void;
   isSumWNds?: boolean;
+  canEditPrice?: boolean;
 }
 
-export const DocLine = ({ item, isSumWNds, onSetLine, onSetDisabledSave }: IProps) => {
+export const DocLine = ({ item, isSumWNds, onSetLine, onSetDisabledSave, canEditPrice = true }: IProps) => {
   const { colors } = useTheme();
 
   const [goodEID, setGoodEID] = useState<string | undefined>(item?.EID?.toString());
@@ -296,11 +297,13 @@ export const DocLine = ({ item, isSumWNds, onSetLine, onSetDisabledSave }: IProp
                   <LargeText style={localStyles.value}>{price.toString()}</LargeText>
                 </View>
                 {/* {item.good.id === 'unknown' && ( */}
-                <View style={localStyles.button}>
-                  <TouchableOpacity>
-                    <IconButton icon="pencil-outline" size={24} onPress={() => setVisiblePriceDialog(true)} />
-                  </TouchableOpacity>
-                </View>
+                {canEditPrice && (
+                  <View style={localStyles.button}>
+                    <TouchableOpacity>
+                      <IconButton icon="pencil-outline" size={24} onPress={() => setVisiblePriceDialog(true)} />
+                    </TouchableOpacity>
+                  </View>
+                )}
                 {/* )} */}
               </View>
               {showRemainsQuantity ? (
@@ -335,11 +338,13 @@ export const DocLine = ({ item, isSumWNds, onSetLine, onSetDisabledSave }: IProp
                 <MediumText>Покупная цена:</MediumText>
                 <LargeText style={localStyles.value}>{buyingPrice.toString()}</LargeText>
               </View>
-              <View style={localStyles.button}>
-                <TouchableOpacity>
-                  <IconButton icon="pencil-outline" size={24} onPress={() => setVisibleBuyingPriceDialog(true)} />
-                </TouchableOpacity>
-              </View>
+              {canEditPrice && (
+                <View style={localStyles.button}>
+                  <TouchableOpacity>
+                    <IconButton icon="pencil-outline" size={24} onPress={() => setVisibleBuyingPriceDialog(true)} />
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
           )}
 

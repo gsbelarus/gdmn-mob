@@ -224,6 +224,15 @@ export const appSettings: Settings = {
     group: mainSettingGroup,
     checkSettingsCode: true,
   },
+  editInventoryPrice: {
+    id: 'editInventoryPrice',
+    sortOrder: 12,
+    description: 'Редактировать цены в инвентаризации',
+    data: false,
+    type: 'boolean',
+    visible: true,
+    group: mainSettingGroup,
+  },
 };
 
 export const unknownGood: IGood = {

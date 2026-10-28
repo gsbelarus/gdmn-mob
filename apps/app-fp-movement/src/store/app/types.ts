@@ -26,6 +26,17 @@ export interface IGood extends ICodeEntity {
   unitWeight?: number;
 }
 
+export interface ILabel {
+  id: string;
+  goodId: string;
+  code: string;
+  productWeight?: number;
+  levelCode: 0 | 1 | 2;
+  labelKey?: string;
+  workDate?: string;
+  numReceived?: number | string;
+}
+
 export interface IPackage extends INamedEntity {
   unitWeight?: number;
 }

@@ -137,3 +137,11 @@ export type PalletStackParamList = RefParamList & {
   PalletList: undefined;
   SelectCell: { docId: string; item: IMoveLine; mode: number; docType?: string };
 };
+
+export type OrderParamList = RefParamList & {
+  OrderView: { id: string; docType?: string };
+  OrderEdit: { id: string; docType?: string } | undefined;
+  ScanGood: { docId: string; docType?: string };
+};
+
+export type OrderStackParamList = { OrderList: undefined } & OrderParamList;

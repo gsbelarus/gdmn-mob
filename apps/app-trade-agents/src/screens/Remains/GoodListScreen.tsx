@@ -49,7 +49,7 @@ const GoodListScreen = () => {
   const goods = refSelectors.selectByName<IGood>('good')?.data;
 
   const [goodRemains] = useState<IRemGood[]>(() =>
-    contact?.id ? getRemGoodListByContact(goods, remains[contact.id], true) : [],
+    contact?.id ? getRemGoodListByContact(goods, remains?.[contact.id], true) : [],
   );
 
   const [searchQuery, setSearchQuery] = useState('');

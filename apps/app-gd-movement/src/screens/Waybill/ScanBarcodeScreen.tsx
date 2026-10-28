@@ -1,12 +1,12 @@
-import React, { useCallback, useLayoutEffect, useMemo, useState } from 'react';
-import { View } from 'react-native';
+import React, { useCallback, useLayoutEffect, useState } from 'react';
+import { Alert, View } from 'react-native';
 
 import { useNavigation, RouteProp, useRoute, useIsFocused } from '@react-navigation/native';
 
 import { AppActivityIndicator, globalStyles, LargeText, navBackButton, ScanBarcode } from '@lib/mobile-ui';
-import { useSelector, refSelectors } from '@lib/store';
+import { docSelectors, documentActions, refSelectors, useDispatch, useSelector } from '@lib/store';
 
-import { IDocumentType, ISettingsOption } from '@lib/types';
+import { ISettingsOption } from '@lib/types';
 
 import { generateId } from '@lib/mobile-hooks';
 
@@ -14,32 +14,23 @@ import { StackNavigationProp } from '@react-navigation/stack';
 
 import { IScannedObject } from '@lib/client-types';
 
-import { DocStackParamList } from '../../navigation/Root/types';
-import { IMovementLine, IMovementDocument } from '../../store/types';
-import { IGood, IMGoodData, IMGoodRemain, IRemains } from '../../store/app/types';
-import { getBrc, getRemGoodByContact } from '../../utils/helpers';
-import { IBarcodeTypes, unknownGood } from '../../utils/constants';
-import { useSelector as useInvSelector } from '../../store';
+import { WaybillStackParamList } from '../../navigation/Root/types';
+import { IWaybillDocument, IWaybillLine } from '../../store/types';
+import { IGood } from '../../store/app/types';
+import { IBarcodeTypes } from '../../utils/constants';
 
 const ScanBarcodeScreen = () => {
-  const docId = useRoute<RouteProp<DocStackParamList, 'ScanBarcode'>>().params?.docId;
-  const navigation = useNavigation<StackNavigationProp<DocStackParamList, 'ScanBarcode'>>();
+  const docId = useRoute<RouteProp<WaybillStackParamList, 'ScanBarcode'>>().params?.docId;
+  const navigation = useNavigation<StackNavigationProp<WaybillStackParamList, 'ScanBarcode'>>();
+  const dispatch = useDispatch();
   const settings = useSelector((state) => state.settings?.data);
-
-  const showZeroRemains = settings?.showZeroRemains?.data;
-  const isInputQuantity = settings?.quantityInput?.data;
 
   const prefixGtin = (settings.prefixGtin as ISettingsOption<string>)?.data || '';
   const prefixISN = (settings.prefixISN as ISettingsOption<string>)?.data || '';
-  const weightSettingsWeightCode = (settings.weightCode as ISettingsOption<string>) || '';
-  const weightSettingsCountCode = (settings.countCode as ISettingsOption<number>)?.data || 0;
-  const weightSettingsCountWeight = (settings.countWeight as ISettingsOption<number>)?.data || 0;
   const barcodeTypes =
     (settings.barcodeTypes as ISettingsOption<Array<IBarcodeTypes>>)?.data
       ?.filter((t) => t.selected)
       .map((t) => t.type) || [];
-
-  const unknownGoods = useInvSelector((state) => state.appInventory.unknownGoods);
 
   const [scaner, setScaner] = useState<IScannedObject>({ state: 'init' });
   const handleClearScaner = () => setScaner({ state: 'init' });
@@ -50,47 +41,20 @@ const ScanBarcodeScreen = () => {
     });
   }, [navigation]);
 
-  const handleShowRemains = useCallback(() => {
-    navigation.navigate('SelectRemainsItem', { docId });
-  }, [docId, navigation]);
-
-  const document = useSelector((state) => state.documents.list).find((item) => item.id === docId) as IMovementDocument;
-
+  const document = docSelectors.selectByDocId<IWaybillDocument>(docId);
+  const isBlocked = document?.status !== 'DRAFT';
   const goods = refSelectors.selectByName<IGood>('good')?.data;
-  const remains = refSelectors.selectByName<IRemains>('remains')?.data[0];
-
-  const documentTypes = refSelectors.selectByName<IDocumentType>('documentType')?.data;
-  const documentType = useMemo(
-    () => documentTypes?.find((d) => d.id === document?.documentType.id),
-    [document?.documentType.id, documentTypes],
-  );
-
-  const contactId = useMemo(
-    () =>
-      documentType?.remainsField === 'fromContact' ? document?.head?.fromContact?.id : document?.head?.toContact?.id,
-    [document?.head?.fromContact?.id, document?.head?.toContact?.id, documentType?.remainsField],
-  );
-
-  const noZeroRemains = useMemo(
-    () => !!documentType?.isControlRemains && !showZeroRemains && !!documentType?.isRemains,
-    [documentType?.isControlRemains, documentType?.isRemains, showZeroRemains],
-  );
-
-  const goodRemains = useMemo<IMGoodData<IMGoodRemain>>(
-    () =>
-      contactId
-        ? getRemGoodByContact(
-            goods.concat(unknownGoods.map((item) => item.good)),
-            remains[contactId],
-            documentType?.isRemains,
-            noZeroRemains,
-          )
-        : {},
-    [contactId, documentType?.isRemains, goods, noZeroRemains, remains, unknownGoods],
-  );
 
   const getScannedObject = useCallback(
     (brc: string, typeOk = true) => {
+      if (!document) {
+        return;
+      }
+
+      if (isBlocked) {
+        return;
+      }
+
       if (!brc) {
         return;
       }
@@ -103,106 +67,88 @@ const ScanBarcodeScreen = () => {
         return;
       }
 
-      let charFrom = 0;
-      let charTo = weightSettingsWeightCode.data.length;
-      const regIsTypeDM = RegExp(`^.{0,1}${prefixGtin}\\d{13,14}${prefixISN}.{8,13}`, 'i');
-      //const regIsTypeDM = RegExp(`^.{0,1}${prefixGtin}\\d{13,14}${prefixISN}.{13}91.{1,4}92.{1,44}`, 'i');
+      if (brc.length === 8 || brc.length === 13) {
+        const barcodeLine = document.lines.find(
+          (item) => item.barcode === brc && item.checkedQuantity !== item.quantity,
+        );
 
-      if (brc.slice(0, 2) === prefixGtin || brc.substring(charFrom, charTo) !== weightSettingsWeightCode.data) {
-        const remItem =
-          getBrc(brc, prefixGtin, goodRemains, prefixISN) ||
-          (documentType?.isRemains ? undefined : { good: { ...unknownGood, barcode: brc } });
+        if (barcodeLine) {
+          const newLine: IWaybillLine = {
+            ...barcodeLine,
+            checked:
+              barcodeLine?.checkedQuantity && barcodeLine?.checkedQuantity + 1 === barcodeLine?.quantity ? true : false,
+            checkedQuantity: barcodeLine?.checkedQuantity ? barcodeLine?.checkedQuantity + 1 : 1,
+          };
 
-        // Находим товар из модели остатков по баркоду, если баркод не найден, то
-        //   если выбор из остатков, то undefined,
-        //   иначе подставляем unknownGood cо сканированным шк и добавляем в позицию документа
-
-        if (!remItem) {
-          setScaner({ state: 'error', message: 'Товар не найден' });
-          return;
-        }
-        const scannedObject: IMovementLine = {
-          good: { id: remItem.good.id, name: remItem.good.name },
-          id: generateId(),
-          quantity: isInputQuantity ? 1 : 0,
-          price: remItem.remains?.length ? remItem.remains[0].price : 0,
-          buyingPrice: remItem.remains?.length ? remItem.remains[0].buyingPrice : 0,
-          remains: remItem.remains?.length ? remItem.remains?.[0].q : 0,
-          barcode: remItem.good.barcode,
-          sortOrder: (document?.lines?.[0]?.sortOrder || 0) + 1,
-          alias: remItem.good.alias || '',
-          weightCode: remItem.good.weightCode?.trim() || '',
-          EID: regIsTypeDM.test(brc) && remItem.good.isMark ? brc : undefined,
-        };
-
-        if (scannedObject) {
-          navigation.navigate('DocLine', {
-            mode: 0,
-            docId,
-            item: scannedObject,
-          });
+          dispatch(documentActions.updateDocumentLine({ docId, line: newLine }));
           setScaner({ state: 'init' });
-        } else {
-          setScaner({ state: 'error' });
-        }
-      } else {
-        charFrom = charTo;
-        charTo = charFrom + weightSettingsCountCode;
-        const code = Number(brc.substring(charFrom, charTo)).toString();
-
-        charFrom = charTo;
-        charTo = charFrom + weightSettingsCountWeight;
-
-        const qty = Number(brc.substring(charFrom, charTo)) / 1000;
-
-        const remItem =
-          Object.values(goodRemains)?.find((item: IMGoodRemain) => item.good.weightCode?.trim() === code) ||
-          (documentType?.isRemains ? undefined : { good: { ...unknownGood, barcode: brc } });
-
-        if (!remItem) {
-          setScaner({ state: 'error', message: 'Товар не найден' });
           return;
         }
 
-        const scannedObject: IMovementLine = {
-          good: { id: remItem.good.id, name: remItem.good.name },
-          id: generateId(),
-          quantity: qty,
-          price: remItem.remains?.length ? remItem.remains[0].price : 0,
-          buyingPrice: remItem.remains?.length ? remItem.remains[0].buyingPrice : 0,
-          remains: remItem.remains?.length ? remItem.remains?.[0].q : 0,
-          barcode: remItem.good.barcode,
-          sortOrder: (document?.lines?.[0]?.sortOrder || 0) + 1,
-          alias: remItem.good.alias || '',
-          weightCode: remItem.good.weightCode?.trim() || '',
-          EID: regIsTypeDM.test(brc) && remItem.good.isMark ? brc : undefined,
-        };
-
-        if (scannedObject) {
-          navigation.navigate('DocLine', {
-            mode: 0,
-            docId,
-            item: scannedObject,
-          });
-          setScaner({ state: 'init' });
-        } else {
-          setScaner({ state: 'error' });
-        }
+        setScaner({ state: 'error', message: 'Позиция данным штрихкодом не найдена.' });
+        return;
       }
+
+      const eidLine = document.lines.find(
+        (item) => JSON.parse(JSON.stringify(item.EID)) === JSON.parse(JSON.stringify(brc)),
+      );
+      if (eidLine) {
+        const newLine: IWaybillLine = { ...eidLine, checked: true };
+        dispatch(documentActions.updateDocumentLine({ docId, line: newLine }));
+        setScaner({ state: 'init' });
+        return;
+      }
+
+      const gtin = brc.match(RegExp(`${prefixGtin}0?\\d{13}${prefixISN}`));
+
+      const good = goods?.find(
+        (e) => gtin && (e.barcode === gtin[0].slice(2, -2) || gtin[0].slice(3, -2) === e?.barcode),
+      );
+      const matchedLine = document.lines.find(
+        (item) =>
+          (item.barcode === gtin?.[0].slice(2, -2) || gtin?.[0].slice(3, -2) === item?.barcode) &&
+          item.checkedQuantity !== item.quantity,
+      );
+
+      if (matchedLine) {
+        const newLine: IWaybillLine = {
+          ...matchedLine,
+          checked:
+            matchedLine?.checkedQuantity && matchedLine?.checkedQuantity + 1 === matchedLine?.quantity ? true : false,
+          checkedQuantity: matchedLine?.checkedQuantity ? matchedLine?.checkedQuantity + 1 : 1,
+        };
+
+        dispatch(documentActions.updateDocumentLine({ docId, line: newLine }));
+        setScaner({ state: 'init' });
+        return;
+      }
+
+      Alert.alert(
+        `${good ? `${good.name}` : 'Внимание!'} `,
+        'Позиция с данным кодом маркировки не найдена.  \n\nДобавить в документ?',
+        [
+          {
+            text: 'ОК',
+            onPress: () => {
+              const newLine: IWaybillLine = {
+                id: generateId(),
+                goodId: good?.id || 'unknown',
+                added: true,
+                sortOrder: (document.lines?.length || 0) + 1,
+                EID: brc,
+              };
+              dispatch(documentActions.addDocumentLine({ docId, line: newLine }));
+              setScaner({ state: 'init' });
+            },
+          },
+          {
+            text: 'Отмена',
+            onPress: () => setScaner({ state: 'init' }),
+          },
+        ],
+      );
     },
-    [
-      docId,
-      document?.lines,
-      documentType?.isRemains,
-      goodRemains,
-      isInputQuantity,
-      navigation,
-      prefixGtin,
-      prefixISN,
-      weightSettingsCountCode,
-      weightSettingsCountWeight,
-      weightSettingsWeightCode.data,
-    ],
+    [dispatch, docId, document, goods, isBlocked, prefixGtin, prefixISN],
   );
 
   const isFocused = useIsFocused();
@@ -224,7 +170,6 @@ const ScanBarcodeScreen = () => {
       onClearScannedObject={handleClearScaner}
       scaner={scaner}
       barCodeTypes={barcodeTypes}
-      onSearch={handleShowRemains}
     />
   );
 };

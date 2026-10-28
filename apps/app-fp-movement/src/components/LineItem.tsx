@@ -12,6 +12,8 @@ interface IItem {
   item: IMoveLine | IFreeShipmentLine; // | IBasedLine;
   disabled?: boolean;
   onPress?: () => void;
+  onLongPress?: () => void;
+  checked?: boolean;
   children?: ReactNode;
   isLab?: boolean;
   isFromAddressed?: boolean;
@@ -22,13 +24,15 @@ const LineItem = ({
   item,
   disabled = false,
   onPress,
+  onLongPress,
+  checked = false,
   children,
   isLab = false,
   isFromAddressed = false,
   isToAddressed = false,
 }: IItem) => {
   return (
-    <ListItemLine readonly={disabled} onPress={onPress}>
+    <ListItemLine readonly={disabled} onPress={onPress} onLongPress={onLongPress} checked={checked}>
       <View style={styles.details}>
         <LargeText style={styles.textBold}>{item.good.name}</LargeText>
         <View style={styles.flexDirectionRow}>

@@ -31,7 +31,7 @@ import {
 } from '../navigation/Root/types';
 import { IShipmentLine, IShipmentDocument, barcodeSettings } from '../store/types';
 
-import { IAddressStoreEntity, IGood, IRemains, IRemGood } from '../store/app/types';
+import { IAddressStoreEntity, IGood, ILabel, IRemains, IRemGood } from '../store/app/types';
 import {
   alertWithSound,
   alertWithSoundMulti,
@@ -39,9 +39,22 @@ import {
   getLineGood,
   getRemGoodListByContact,
 } from '../utils/helpers';
+import {
+  buildMarkingLineFields,
+  isLegacyNumericBarcode,
+  isMarkCodeDuplicate,
+  isMarkingCode,
+  looksLikeLegacyTechBarcode,
+  resolveMarkingScan,
+  shouldFallbackToLegacyBarcode,
+} from '../utils/markingCodeHelpers';
 import { useSelector as useFpSelector, fpMovementActions, useDispatch as useFpDispatch } from '../store/index';
 
 import { barCodeTypes } from '../utils/constants';
+
+const EMPTY_LABELS: ILabel[] = [];
+
+const MARKING_DOCUMENT_TYPES = new Set(['shipment', 'currShipment', 'freeShipment', 'currFreeShipment']);
 
 const ScanGoodScreen = () => {
   const docId = useRoute<RouteProp<ShipmentStackParamList, 'ScanGood'>>().params?.docId;
@@ -73,6 +86,7 @@ const ScanGoodScreen = () => {
   const dispatch = useDispatch();
 
   const goods = refSelectors.selectByName<IGood>('good').data;
+  const labels = refSelectors.selectByName<ILabel>('label')?.data ?? EMPTY_LABELS;
   const settings = useSelector((state) => state.settings?.data);
 
   const [scaner, setScaner] = useState<IScannedObject>({ state: 'init' });
@@ -93,9 +107,13 @@ const ScanGoodScreen = () => {
 
   const shipment = docSelectors.selectByDocId<IShipmentDocument>(docId);
   const shipmentLines = useMemo(
-    () => shipment?.lines?.sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)),
+    () => (shipment?.lines ? [...shipment.lines].sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)) : undefined),
     [shipment?.lines],
   );
+
+  const isMarkingDocument = MARKING_DOCUMENT_TYPES.has(shipment?.documentType?.name ?? '');
+
+  const isCattle = useMemo(() => (shipmentLines?.length ? shipmentLines[0].good.isCattle : undefined), [shipmentLines]);
 
   const tempOrder = useFpSelector((state) => state.fpMovement.list).find((i) => i.orderId === shipment?.head?.orderId);
 
@@ -128,7 +146,68 @@ const ScanGoodScreen = () => {
 
   const handleGetScannedObject = useCallback(
     (brc: string) => {
-      if (!brc.match(/^-{0,1}\d+$/)) {
+      if (isMarkingDocument && !isLegacyNumericBarcode(brc)) {
+        const markingResult = resolveMarkingScan({
+          rawCode: brc,
+          labels,
+          goods,
+          goodRemains,
+          remainsUse:
+            remainsUse && shipment?.documentType?.name !== 'return' && shipment?.documentType?.name !== 'inventory',
+        });
+
+        if (markingResult.kind === 'not_found') {
+          if (!shouldFallbackToLegacyBarcode(brc, markingResult)) {
+            setScaner({
+              state: 'error',
+              message: isMarkingCode(brc)
+                ? 'Код маркировки не найден'
+                : 'Штрих-код не определён. Повторите сканирование!',
+            });
+            return;
+          }
+        } else if (markingResult.kind === 'found') {
+          const { good: lineGood, markCode, label, isRightWeight } = markingResult;
+          const isGoodCattle = lineGood.isCattle;
+
+          if (isCattle === 1 && !isGoodCattle) {
+            setScaner({ state: 'error', message: 'Товар не относится к группе КРС!' });
+            return;
+          }
+
+          if (isCattle === 0 && isGoodCattle) {
+            setScaner({ state: 'error', message: 'Товар относится к группе КРС!' });
+            return;
+          }
+
+          if (!isRightWeight) {
+            setScaner({ state: 'error', message: 'Вес товара превышает вес в остатках' });
+            return;
+          }
+
+          if (isMarkCodeDuplicate(markCode, shipmentLines)) {
+            setScaner({ state: 'error', message: 'Данный код маркировки уже добавлен!' });
+            return;
+          }
+
+          setScannedObject({
+            ...buildMarkingLineFields({
+              label,
+              labels,
+              good: lineGood,
+              sortOrder: (shipmentLines?.length || 0) + 1,
+              remainsUse:
+                remainsUse && shipment?.documentType?.name !== 'return' && shipment?.documentType?.name !== 'inventory',
+            }),
+            id: generateId(),
+            quantity: 0,
+          });
+          setScaner({ state: 'found' });
+          return;
+        }
+      }
+
+      if (!isLegacyNumericBarcode(brc) && !looksLikeLegacyTechBarcode(brc)) {
         setScaner({ state: 'error', message: 'Штрих-код неверного формата' });
         return;
       }
@@ -193,6 +272,9 @@ const ScanGoodScreen = () => {
       goodBarcodeSettings,
       goodRemains,
       goods,
+      isCattle,
+      isMarkingDocument,
+      labels,
       maxBarcodeLength,
       minBarcodeLength,
       remainsUse,
@@ -209,7 +291,11 @@ const ScanGoodScreen = () => {
     const tempLine = tempOrder?.lines?.find((i) => scannedObject.good.id === i.good.id);
 
     if (tempLine && tempOrder) {
-      const newTempLine = { ...tempLine, weight: round(tempLine.weight - scannedObject.weight, 3) };
+      const lineWeight =
+        scannedObject.mark && scannedObject.good.unitWeight && scannedObject.good.unitWeight !== 1
+          ? round(scannedObject.weight / scannedObject.good.unitWeight, 3)
+          : scannedObject.weight;
+      const newTempLine = { ...tempLine, weight: round(tempLine.weight - lineWeight, 3) };
       if (newTempLine.weight > 0) {
         fpDispatch(
           fpMovementActions.updateTempOrderLine({

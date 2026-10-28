@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { View, TextInput, Keyboard, TouchableHighlight, StyleProp, ViewStyle } from 'react-native';
 import { RouteProp, useIsFocused, useNavigation, useRoute, useTheme } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { Audio } from 'expo-av';
 
 import { docSelectors, documentActions, refSelectors, useDispatch, useDocThunkDispatch, useSelector } from '@lib/store';
 import {
@@ -21,6 +20,8 @@ import {
   SaveDocument,
   SimpleDialog,
   DateInfo,
+  CloseButton,
+  DeleteButton,
 } from '@lib/mobile-ui';
 
 import { generateId, getDateString, keyExtractor, useSendDocs, sleep, round, isNumeric } from '@lib/mobile-hooks';
@@ -33,7 +34,8 @@ import { DashboardStackParamList } from '@lib/mobile-navigation';
 
 import { barcodeSettings, IInventoryDocument, IInventoryLine } from '../../store/types';
 import { InventoryStackParamList } from '../../navigation/Root/types';
-import { getStatusColor, lineTypes, ONE_SECOND_IN_MS } from '../../utils/constants';
+import { useScanSound } from '../../utils/useScanSound';
+import { getStatusColor, lineTypes, SCAN_REFOCUS_DELAY_MS } from '../../utils/constants';
 
 import {
   alertWithSound,
@@ -44,11 +46,23 @@ import {
   getNextDocNumber,
   getUpdatedLine,
 } from '../../utils/helpers';
-import { IAddressStoreEntity, IBarcode, IGood } from '../../store/app/types';
+import { IAddressStoreEntity, IBarcode, IGood, ILabel } from '../../store/app/types';
 
 import ViewTotal from '../../components/ViewTotal';
 import QuantDialog from '../../components/QuantDialog';
 import LineItem from '../../components/LineItem';
+import {
+  buildMarkingLineFields,
+  getMarkingNotFoundMessage,
+  isLegacyNumericBarcode,
+  isMarkCodeDuplicate,
+  isMarkingCode,
+  resolveMarkingScan,
+  shouldFallbackToLegacyBarcode,
+} from '../../utils/markingCodeHelpers';
+import { useLineDeleteMode } from '../../utils/useLineDeleteMode';
+
+const EMPTY_LABELS: ILabel[] = [];
 
 export interface IScanerObject {
   item?: IInventoryLine;
@@ -69,7 +83,10 @@ export const InventoryViewScreen = () => {
   const doc = docSelectors.selectByDocId<IInventoryDocument>(id);
   const isScanerReader = useSelector((state) => state.settings?.data)?.scannerUse?.data;
 
-  const lines = useMemo(() => doc?.lines?.sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)), [doc?.lines]);
+  const lines = useMemo(
+    () => (doc?.lines ? [...doc.lines].sort((a, b) => (b.sortOrder || 0) - (a.sortOrder || 0)) : undefined),
+    [doc?.lines],
+  );
   const lineSum = lines?.reduce(
     (sum, line) => {
       return {
@@ -82,8 +99,15 @@ export const InventoryViewScreen = () => {
   );
 
   const isBlocked = doc?.status !== 'DRAFT';
+
   const goods = refSelectors.selectByName<IGood>('good').data;
+  const labels = refSelectors.selectByName<ILabel>('label')?.data ?? EMPTY_LABELS;
   const settings = useSelector((state) => state.settings?.data);
+  const allowLineDelete = Boolean(settings.allowLineDelete?.data);
+  const { delList, isDelList, handleDeleteSelectedLines, getLineHandlers, clearSelection } = useLineDeleteMode({
+    allowLineDelete,
+    isBlocked,
+  });
   const loading = useSelector((state) => state.app.loading);
   const goodBarcodeSettings = Object.entries(settings).reduce((prev: barcodeSettings, [idx, item]) => {
     if (item && item.group?.id !== 'base' && typeof item.data === 'number') {
@@ -113,11 +137,26 @@ export const InventoryViewScreen = () => {
 
   const departs = refSelectors.selectByName<IAddressStoreEntity>('depart').data;
 
-  const sound = Audio.Sound.createAsync(require('../../../assets/ok.wav'));
+  const playSound = useScanSound(require('../../../assets/ok.wav'));
 
-  const playSound = useCallback(async () => {
-    (await sound).sound.playAsync();
-  }, [sound]);
+  const [scanned, setScanned] = useState(false);
+  const ref = useRef<TextInput>(null);
+
+  const scheduleScannerFocus = useCallback(() => {
+    setTimeout(() => {
+      ref.current?.focus();
+      ref.current?.clear();
+    }, SCAN_REFOCUS_DELAY_MS);
+  }, []);
+
+  const handleDeleteLines = useCallback(() => {
+    handleDeleteSelectedLines(() => {
+      dispatch(documentActions.removeDocumentLines({ docId: id, lineIds: delList }));
+      clearSelection();
+      setScanned(false);
+      scheduleScannerFocus();
+    });
+  }, [clearSelection, delList, dispatch, handleDeleteSelectedLines, id, scheduleScannerFocus]);
 
   const handleFocus = () => {
     ref?.current?.focus();
@@ -257,8 +296,9 @@ export const InventoryViewScreen = () => {
     if (lines?.length) {
       dispatch(documentActions.removeDocumentLine({ docId: id, lineId: lines[0].id }));
     }
-    handleFocus();
-  }, [dispatch, id, lines]);
+    setScanned(false);
+    scheduleScannerFocus();
+  }, [dispatch, id, lines, scheduleScannerFocus]);
 
   const sendDoc = useSendDocs(doc ? [doc] : [], doc ? [getDocToSend(doc)] : []);
 
@@ -358,6 +398,8 @@ export const InventoryViewScreen = () => {
         ) : (
           <MenuButton actionsMenu={actionsMenu} disabled={screenState !== 'idle'} />
         )
+      ) : isDelList ? (
+        <DeleteButton onPress={handleDeleteLines} />
       ) : (
         <View style={styles.buttons}>
           {doc?.status === 'DRAFT' && <SaveDocument onPress={handleSaveDocument} disabled={screenState !== 'idle'} />}
@@ -375,9 +417,11 @@ export const InventoryViewScreen = () => {
     [
       actionsMenu,
       doc?.status,
+      handleDeleteLines,
       handleSaveDocument,
       id,
       isBlocked,
+      isDelList,
       isScanerReader,
       lines?.length,
       loading,
@@ -386,12 +430,18 @@ export const InventoryViewScreen = () => {
     ],
   );
 
+  const renderLeft = useCallback(
+    () => (isDelList ? <CloseButton onPress={clearSelection} /> : navBackButton()),
+    [clearSelection, isDelList],
+  );
+
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerLeft: navBackButton,
+      headerLeft: renderLeft,
       headerRight: renderRight,
+      title: isDelList ? `Выделено позиций: ${delList.length}` : '',
     });
-  }, [navigation, renderRight]);
+  }, [delList.length, isDelList, navigation, renderLeft, renderRight]);
 
   const handlePressLine = useCallback(
     (weight: number) => {
@@ -434,23 +484,25 @@ export const InventoryViewScreen = () => {
 
   const renderItem = useCallback(
     ({ item }: { item: IInventoryLine }) => {
+      const handlers = getLineHandlers(item.id, () => handlePressLine(item.weight));
+
       return (
         <LineItem
           item={item}
-          disabled={doc?.status !== 'DRAFT' || item.sortOrder !== lines?.length || Boolean(item.scannedBarcode)}
-          onPress={() => handlePressLine(item.weight)}
+          checked={handlers.checked}
+          onPress={handlers.onPress}
+          onLongPress={handlers.onLongPress}
+          disabled={
+            !isDelList && (doc?.status !== 'DRAFT' || item.sortOrder !== lines?.length || Boolean(item.scannedBarcode))
+          }
           isToAddressed={doc?.head.fromDepart?.isAddressStore}
         />
       );
     },
-    [doc?.head.fromDepart?.isAddressStore, doc?.status, handlePressLine, lines?.length],
+    [doc?.head.fromDepart?.isAddressStore, doc?.status, getLineHandlers, handlePressLine, isDelList, lines?.length],
   );
 
   const [isDateVisible, setIsDateVisible] = useState(false);
-
-  const [scanned, setScanned] = useState(false);
-
-  const ref = useRef<TextInput>(null);
 
   const handleErrorMessage = useCallback((visible: boolean, text: string) => {
     if (visible) {
@@ -471,9 +523,76 @@ export const InventoryViewScreen = () => {
         return;
       }
 
-      if (!brc.match(/^-{0,1}\d+$/)) {
-        handleErrorMessage(visibleDialog, 'Штрих-код не определён. Повторите сканирование!');
+      if (isDelList) {
         return;
+      }
+
+      if (!isLegacyNumericBarcode(brc)) {
+        const markingResult = resolveMarkingScan({
+          rawCode: brc,
+          labels,
+          goods,
+          goodRemains: [],
+          remainsUse: false,
+        });
+
+        if (markingResult.kind === 'not_found') {
+          if (!shouldFallbackToLegacyBarcode(brc, markingResult)) {
+            const message = isMarkingCode(brc)
+              ? getMarkingNotFoundMessage(markingResult.reason)
+              : 'Штрих-код не определён. Повторите сканирование!';
+            handleErrorMessage(visibleDialog, message);
+            setScanned(false);
+            return;
+          }
+        } else if (markingResult.kind === 'found') {
+          const { good: lineGood, markCode, label } = markingResult;
+
+          if (isMarkCodeDuplicate(markCode, doc?.lines)) {
+            handleErrorMessage(visibleDialog, 'Данный код маркировки уже добавлен!');
+            return;
+          }
+
+          const newLine: IInventoryLine = {
+            ...buildMarkingLineFields({
+              label,
+              labels,
+              good: lineGood,
+              sortOrder: (doc?.lines?.length || 0) + 1,
+              remainsUse: false,
+            }),
+            id: generateId(),
+          };
+
+          if (isAddressedDoc) {
+            navigation.navigate('InventorySelectCell', {
+              docId: id,
+              item: newLine,
+              mode: 0,
+              docType: doc.documentType.name,
+            });
+          } else {
+            dispatch(documentActions.addDocumentLine({ docId: id, line: newLine }));
+            playSound();
+          }
+
+          if (visibleDialog) {
+            setVisibleDialog(false);
+            setErrorMessage('');
+            setBarcode('');
+          } else {
+            setScanned(false);
+          }
+
+          handleFocus();
+
+          if (addPalletQuantPack && newLine.weight >= goodBarcodeSettings?.boxWeight) {
+            setIsPack(false);
+            setVisibleQuantPackDialog(true);
+          }
+
+          return;
+        }
       }
 
       if (brc.length < minBarcodeLength) {
@@ -551,10 +670,12 @@ export const InventoryViewScreen = () => {
 
     [
       doc,
+      isDelList,
       minBarcodeLength,
       maxBarcodeLength,
       goodBarcodeSettings,
       goods,
+      labels,
       isAddressedDoc,
       visibleDialog,
       addPalletQuantPack,
@@ -585,13 +706,9 @@ export const InventoryViewScreen = () => {
 
   useEffect(() => {
     if (!visibleDialog && !scanned && ref?.current) {
-      ref?.current &&
-        setTimeout(() => {
-          ref.current?.focus();
-          ref.current?.clear();
-        }, ONE_SECOND_IN_MS);
+      scheduleScannerFocus();
     }
-  }, [scanned, ref, visibleDialog]);
+  }, [scanned, ref, scheduleScannerFocus, visibleDialog]);
 
   useEffect(() => {
     if (screenState === 'sent' || screenState === 'deleted' || screenState === 'copied') {
@@ -641,6 +758,7 @@ export const InventoryViewScreen = () => {
         title={doc.documentType.description || ''}
         onPress={() => (isEditable ? handleEditDocHead() : setIsDateVisible(!isDateVisible))}
         editable={isEditable}
+        disabled={delList.length > 0}
         isBlocked={isBlocked}
       >
         <View style={styles.infoBlock}>
@@ -667,19 +785,27 @@ export const InventoryViewScreen = () => {
             renderItem={renderItem}
             ItemSeparatorComponent={ItemSeparator}
             estimatedItemSize={60}
-            extraData={[lines, isBlocked]}
+            extraData={[lines, isBlocked, delList, isDelList]}
             keyboardShouldPersistTaps={'always'}
           />
           {lines?.length ? <ViewTotal quantPack={lineSum?.quantPack || 0} weight={lineSum?.weight || 0} /> : null}
         </>
       ) : lineType === 'last' && lines?.[0] ? (
         <View style={styles.spaceBetween}>
-          <LineItem
-            item={lines?.[0]}
-            disabled={doc?.status !== 'DRAFT' || Boolean(lines?.[0].scannedBarcode)}
-            onPress={() => handlePressLine(lines?.[0].weight)}
-            isToAddressed={doc?.head.fromDepart?.isAddressStore}
-          />
+          {(() => {
+            const handlers = getLineHandlers(lines[0].id, () => handlePressLine(lines[0].weight));
+
+            return (
+              <LineItem
+                item={lines[0]}
+                checked={handlers.checked}
+                onPress={handlers.onPress}
+                onLongPress={handlers.onLongPress}
+                disabled={!isDelList && (doc?.status !== 'DRAFT' || Boolean(lines[0].scannedBarcode))}
+                isToAddressed={doc?.head.fromDepart?.isAddressStore}
+              />
+            );
+          })()}
           {lines?.length ? <ViewTotal quantPack={lineSum?.quantPack || 0} weight={lineSum?.weight || 0} /> : null}
         </View>
       ) : null}

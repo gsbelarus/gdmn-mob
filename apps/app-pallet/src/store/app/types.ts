@@ -32,3 +32,10 @@ export interface IBarcodeSum {
   evenSum: number; //чётные
   oddSum: number; //нечётные
 }
+
+export interface ILabel {
+  id: string;
+  code: string;
+  goodId?: string;
+  levelCode?: 0 | 1 | 2;
+}

@@ -4,7 +4,7 @@ import { View, StyleSheet } from 'react-native';
 import { useNavigation, RouteProp, useRoute, useIsFocused } from '@react-navigation/native';
 
 import { AppActivityIndicator, globalStyles, LargeText, MediumText, navBackButton, ScanBarcode } from '@lib/mobile-ui';
-import { docSelectors, useDispatch, documentActions, appActions, useSelector } from '@lib/store';
+import { docSelectors, useDispatch, documentActions, appActions, useSelector, refSelectors } from '@lib/store';
 
 import { StackNavigationProp } from '@react-navigation/stack';
 
@@ -14,6 +14,15 @@ import { generateId } from '@lib/mobile-hooks';
 
 import { PalletStackParamList } from '../../navigation/Root/types';
 import { IPalletLine, IPalletDocument } from '../../store/types';
+import { ILabel } from '../../store/app/types';
+import {
+  isLegacyNumericBarcode,
+  isMarkingCode,
+  isPalletMarkDuplicate,
+  resolvePalletMark,
+} from '../../utils/markingCodeHelpers';
+
+const EMPTY_LABELS: ILabel[] = [];
 
 const PalletGoodScreen = () => {
   const docId = useRoute<RouteProp<PalletStackParamList, 'PalletGood'>>().params?.docId;
@@ -26,6 +35,7 @@ const PalletGoodScreen = () => {
 
   const prefixErp = useSelector((state) => state.settings?.data?.prefixErp?.data);
   const prefixS = useSelector((state) => state.settings?.data?.prefixS?.data);
+  const labels = refSelectors.selectByName<ILabel>('label')?.data ?? EMPTY_LABELS;
 
   useEffect(() => {
     return () => {
@@ -44,6 +54,38 @@ const PalletGoodScreen = () => {
 
   const handleGetScannedObject = useCallback(
     (brc: string) => {
+      if (!isLegacyNumericBarcode(brc)) {
+        const markingResult = resolvePalletMark(brc, labels);
+
+        if (markingResult.kind === 'not_found') {
+          setScaner({
+            state: 'error',
+            message: isMarkingCode(brc) ? 'Код маркировки не найден' : 'Баркод неверного формата',
+          });
+          return;
+        }
+
+        if (markingResult.kind === 'found') {
+          const { label, markCode } = markingResult;
+
+          if (isPalletMarkDuplicate(markCode, doc?.lines)) {
+            setScaner({
+              state: 'error',
+              message: 'Данный код маркировки уже добавлен',
+            });
+            return;
+          }
+
+          setScannedObject({
+            id: generateId(),
+            barcode: '',
+            mark: { id: label.id, code: label.code },
+          });
+          setScaner({ state: 'found' });
+          return;
+        }
+      }
+
       if (brc.slice(0, 2) !== prefixErp && brc.slice(0, 2) !== prefixS) {
         setScaner({
           state: 'error',
@@ -63,7 +105,7 @@ const PalletGoodScreen = () => {
 
       setScaner({ state: 'found' });
     },
-    [doc?.lines, prefixErp, prefixS],
+    [doc?.lines, labels, prefixErp, prefixS],
   );
 
   const handleSaveScannedItem = useCallback(() => {
@@ -107,7 +149,7 @@ const PalletGoodScreen = () => {
     >
       {scannedObject ? (
         <View style={localStyles.itemInfo}>
-          <MediumText style={localStyles.text}>{scannedObject.barcode}</MediumText>
+          <MediumText style={localStyles.text}>{scannedObject.mark?.code || scannedObject.barcode}</MediumText>
         </View>
       ) : undefined}
     </ScanBarcode>

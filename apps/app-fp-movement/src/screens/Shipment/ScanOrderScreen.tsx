@@ -73,7 +73,6 @@ const ScanOrderScreen = () => {
         setScaner({ state: 'error', message: 'Штрих-код неверного формата' });
         return;
       }
-
       const order = orders.find((item) => item.head.barcode === brc);
       if (!order) {
         setScaner({ state: 'error', message: 'Заявка не найдена' });
@@ -87,6 +86,10 @@ const ScanOrderScreen = () => {
         setScannedObject(shipment);
         return;
       } else {
+        if (new Date(order.head.onDate).setHours(0, 0, 0, 0) < new Date().setHours(0, 0, 0, 0)) {
+          setScaner({ state: 'error', message: 'Нельзя выбрать дату меньше текущей' });
+          return;
+        }
         setScannedObject(order);
         setScaner({ state: 'found' });
       }

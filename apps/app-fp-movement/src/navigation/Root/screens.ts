@@ -30,6 +30,7 @@ import { SelectRefItemScreen } from '../../components';
 import { ReceiptEditScreen, ReceiptListScreen, ReceiptViewScreen } from '../../screens/Receipt';
 
 import { PalletListScreen } from '../../screens/Pallet';
+import { OrderListScreen, OrderViewScreen } from '../../screens/Order';
 
 export const moveScreens = {
   MoveEdit: { title: 'Перемещение', component: MoveEditScreen },
@@ -179,4 +180,14 @@ export const remainsScreens = {
 export const palletScreens = {
   PalletList: { title: 'Паллеты', component: PalletListScreen },
   SelectCell: { title: 'Выбор ячейки', component: SelectCellScreen },
+};
+
+export const orderScreens = {
+  // OrderEdit: { title: 'Заявка', component: OrderEditScreen },
+  OrderView: { title: '', component: OrderViewScreen },
+  ScanGood: { title: 'Сканер', component: ScanGoodScreen },
+};
+
+export const orderListScreens = {
+  OrderList: { title: 'Заявки', component: OrderListScreen },
 };

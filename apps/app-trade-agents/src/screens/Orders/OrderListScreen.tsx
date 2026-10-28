@@ -1,662 +1,533 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
-import { Alert, View, StyleSheet } from 'react-native';
-import { RouteProp, useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
-import { StackNavigationProp } from '@react-navigation/stack';
+import React, { useCallback, useState, useLayoutEffect, useMemo, useEffect } from 'react';
+import { ListRenderItem, Platform, SectionList, SectionListData, View, StyleSheet, Keyboard } from 'react-native';
+import { useIsFocused, useNavigation, useTheme } from '@react-navigation/native';
 
-import { docSelectors, documentActions, refSelectors, useDispatch, useDocThunkDispatch, useSelector } from '@lib/store';
 import {
-  AddButton,
-  MenuButton,
-  useActionSheet,
   globalStyles as styles,
-  InfoBlock,
-  SendButton,
-  MediumText,
-  AppActivityIndicator,
-  DeleteButton,
-  CloseButton,
-  LargeText,
-  navBackButton,
+  AddButton,
+  FilterButtons,
   ItemSeparator,
-  SaveDocument,
-  SimpleDialog,
-  globalColors,
-  DateInfo,
+  Status,
+  AppScreen,
+  SubTitle,
+  ScreenListItem,
+  IListItemProps,
+  EmptyList,
+  AppActivityIndicator,
+  CloseButton,
+  DeleteButton,
+  navBackDrawer,
+  MediumText,
+  SelectableInput,
+  FilterButton,
+  PrimeButton,
+  Checkbox,
 } from '@lib/mobile-ui';
 
-import {
-  formatValue,
-  generateId,
-  getDateString,
-  useSendDocs,
-  keyExtractor,
-  sleep,
-  useSendOneRefRequest,
-} from '@lib/mobile-hooks';
+import { StackNavigationProp } from '@react-navigation/stack';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
-import { INamedEntity, ScreenState } from '@lib/types';
+import { deleteSelectedItems, formatValue, getDateString, getDelList, keyExtractor } from '@lib/mobile-hooks';
 
-import { useTheme, MD2Theme } from 'react-native-paper';
+import { appActions, documentActions, refSelectors, useDispatch, useDocThunkDispatch, useSelector } from '@lib/store';
 
-import { FlashList } from '@shopify/flash-list';
+import { IDelList, IListItem } from '@lib/mobile-types';
 
-import {
-  IContact,
-  IDebt,
-  IGood,
-  IOrderDocument,
-  IOrderLine,
-  IOutlet,
-  IPackageGood,
-  IRouteDocument,
-  IVisitDocument,
-  visitDocumentType,
-} from '../../store/types';
+import { Searchbar } from 'react-native-paper';
 
+import { StatusTypes } from '@lib/mobile-ui/src/components/FilterButtons';
+
+import { IDebt, IOrderDocument, IOrderListFormParam, IOutlet } from '../../store/types';
 import { OrdersStackParamList } from '../../navigation/Root/types';
 
-import { getStatusColor } from '../../utils/constants';
+import { statusTypes } from '../../utils/constants';
 
-import { getNextDocNumber } from '../../utils/helpers';
+import OrderListTotal from './components/OrderListTotal';
 
-import { ICoords } from '../../store/geo/types';
+export interface OrderListSectionProps {
+  title: string;
+}
 
-import { getCurrentPosition } from '../../utils/expoFunctions';
+export type SectionDataProps = SectionListData<IListItemProps, OrderListSectionProps>[];
 
-import OrderItem from './components/OrderItem';
-import OrderTotal from './components/OrderTotal';
-import OrderLineEdit, { IOrderItemLine } from './components/OrderLineEdit';
-import { OrderCopyDialog } from './components/OrderCopyDialog';
-
-export type ICheckedLines = {
-  copyLines: IOrderLine[];
-  absentLines: IOrderLine[];
-};
-
-const OrderViewScreen = () => {
-  const showActionSheet = useActionSheet();
-  const docDispatch = useDocThunkDispatch();
-  const navigation = useNavigation<StackNavigationProp<OrdersStackParamList, 'OrderView'>>();
-  const { id, routeId, readonly } = useRoute<RouteProp<OrdersStackParamList, 'OrderView'>>().params;
-
+const OrderListScreen = () => {
+  const navigation = useNavigation<StackNavigationProp<OrdersStackParamList, 'OrderList'>>();
   const dispatch = useDispatch();
+  const docDispatch = useDocThunkDispatch();
+  const { colors } = useTheme();
 
-  const [screenState, setScreenState] = useState<ScreenState>('idle');
-  const [delList, setDelList] = useState<string[]>([]);
-  const isDelList = !!Object.keys(delList).length;
+  const orders = useSelector((state) => state.documents.list) as IOrderDocument[];
+  const outlets = refSelectors.selectByName<IOutlet>('outlet')?.data;
 
-  const [isDateVisible, setIsDateVisible] = useState(false);
+  const searchStyle = useMemo(() => colors.primary, [colors.primary]);
 
-  const [isGroupVisible, setIsGroupVisible] = useState(false);
-  const loading = useSelector((state) => state.app.loading);
-  const order = docSelectors.selectByDocId<IOrderDocument>(id);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterVisible, setFilterVisible] = useState(false);
 
-  const isBlocked = readonly || order?.status !== 'DRAFT';
+  const {
+    filterContact,
+    filterOutlet,
+    filterDateBegin,
+    filterDateEnd,
+    filterStatusList = [],
+  } = useSelector((state) => state.app.formParams as IOrderListFormParam);
 
-  const debt = refSelectors.selectByRefId<IDebt>('debt', order?.head?.contact.id);
-
-  const { colors } = useTheme<MD2Theme>();
-
-  const debtTextStyle = { color: debt?.saldoDebt && debt?.saldoDebt > 0 ? colors.error : colors.text };
-
-  const contact = refSelectors.selectByRefId<IContact>('contact', order?.head?.contact.id);
-
-  const address = refSelectors.selectByRefId<IOutlet>('outlet', order?.head?.outlet.id)?.address;
-  const limitSum = refSelectors.selectByRefId<IContact>('contact', order?.head?.contact.id)?.limitSum;
-
-  const packages = refSelectors.selectByName<IPackageGood>('packageGood')?.data;
-  const goods = refSelectors.selectByName<IGood>('good')?.data;
-
-  const settings = useSelector((state) => state.settings.data);
-  const isUseRemains = settings?.isUseRemains?.data as boolean;
-  const depart = refSelectors.selectByRefId<INamedEntity>('department', order?.head?.depart?.id)?.name;
-
-  const handleAddOrderLine = useCallback(() => {
-    navigation.navigate('SelectGood', {
-      docId: id,
-    });
-  }, [id, navigation]);
-
-  const handleEditOrderHead = useCallback(() => {
-    navigation.navigate('OrderEdit', { id, routeId });
-  }, [navigation, id, routeId]);
-
-  const orderList = docSelectors.selectByDocType<IOrderDocument>('order');
-
-  const route = docSelectors.selectByDocId<IRouteDocument>(routeId);
-
-  const routeLineId = route?.lines.find((i) => i.outlet.id === order?.head.outlet.id)?.id;
-
-  const visit = docSelectors.selectByDocType<IVisitDocument>('visit')?.find((e) => e.head.routeLineId === routeLineId);
-
-  const [visibleDebtDialog, setVisibleDebtDialog] = useState(false);
-
-  const sendRequest = useSendOneRefRequest('Дебиторская задолженность', {
-    name: 'debt',
-    contactId: order?.head?.contact?.id,
-  });
-
-  const handleSendDebtRequest = useCallback(async () => {
-    setVisibleDebtDialog(false);
-    await sendRequest();
-  }, [sendRequest]);
-
-  const sendRemainsRequest = useSendOneRefRequest('Остатки', { name: 'remains' });
-
-  const handleSendRemainsRequest = useCallback(async () => {
-    if (isUseRemains) {
-      await sendRemainsRequest();
-    }
-  }, [isUseRemains, sendRemainsRequest]);
-
-  const handleOpenDebtDialog = () => {
-    setVisibleDebtDialog(true);
-  };
-
-  const [visibleCopyDialog, setVisibleCopyDialog] = useState(false);
-  const [absentLines, setAbsentLines] = useState<IOrderLine[]>([]);
-  const [copyLines, setCopyLines] = useState<IOrderLine[]>([]);
-
-  const handleCopyOrder = useCallback(async () => {
-    if (!order) {
-      return;
-    }
-
-    setScreenState('copying');
-    await sleep(1);
-    const newId = generateId();
-
-    const tomorrow = new Date();
-    const newDocDate = tomorrow.toISOString();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const newOnDate = tomorrow.toISOString();
-
-    const orderDocs = routeId
-      ? orderList?.filter((doc) => doc.head?.route?.id === routeId && doc.head.outlet?.id === order?.head.outlet?.id)
-      : orderList;
-
-    const newNumber = getNextDocNumber(orderDocs);
-
-    const newDoc: IOrderDocument = {
-      ...order,
-      id: newId,
-      number: newNumber,
-      status: 'DRAFT',
-      head: {
-        ...order.head,
-        route: routeId ? ({ id: routeId, name: '' } as INamedEntity) : undefined,
-        onDate: newOnDate,
-      },
-      lines: absentLines?.length ? copyLines : order.lines,
-      documentDate: newDocDate,
-      creationDate: newDocDate,
-      editionDate: newDocDate,
-      sentDate: undefined,
-      errorMessage: undefined,
-      erpCreationDate: undefined,
-    };
-
-    if (routeId && routeLineId && !orderDocs.length) {
-      let beginGeoPoint: ICoords | undefined;
-
-      try {
-        //Если копируется первая заявка
-        //и есть визит по точке маршрута, то редактируем его
-        //и нет визита - создаем
-        if (!orderDocs.length) {
-          beginGeoPoint = await getCurrentPosition();
-          const visitDate = new Date().toISOString();
-
-          if (visit) {
-            const updatedVisit: IVisitDocument = {
-              ...visit,
-              documentDate: visitDate,
-              head: {
-                ...visit.head,
-                dateBegin: visitDate,
-                beginGeoPoint,
-                routeLineId,
-              },
-              creationDate: visitDate,
-              editionDate: visitDate,
-            };
-            dispatch(documentActions.updateDocument({ docId: visit.id, document: updatedVisit }));
-          } else {
-            const visitId = generateId();
-
-            const newVisit: IVisitDocument = {
-              id: visitId,
-              documentType: visitDocumentType,
-              number: visitId,
-              documentDate: visitDate,
-              status: 'DRAFT',
-              head: {
-                routeLineId,
-                dateBegin: visitDate,
-                beginGeoPoint,
-                takenType: 'ON_PLACE',
-              },
-              creationDate: visitDate,
-              editionDate: visitDate,
-            };
-            dispatch(documentActions.addDocument(newVisit));
-          }
-
-          dispatch(documentActions.addDocument(newDoc));
-        }
-        navigation.navigate('OrderView', { id: newId, routeId });
-      } catch (e) {
-        setScreenState('idle');
-      }
-    } else {
-      docDispatch(documentActions.addDocument(newDoc));
-      navigation.navigate('OrderView', { id: newId, routeId });
-    }
-    setScreenState('copied');
-  }, [
-    order,
-    routeId,
-    orderList,
-    absentLines?.length,
-    copyLines,
-    routeLineId,
-    navigation,
-    visit,
-    dispatch,
-    docDispatch,
-  ]);
-
-  const handleCheckLines = useCallback(async () => {
-    if (!order) {
-      return;
-    }
-
-    const linesList: ICheckedLines = order.lines?.reduce(
-      (prev: ICheckedLines, cur) => {
-        const good = goods.find((g) => g.id === cur.good.id);
-        if (good) {
-          prev = { ...prev, copyLines: [...prev.copyLines, cur] };
-        } else {
-          prev = { ...prev, absentLines: [...prev.absentLines, cur] };
-        }
-        return prev;
-      },
-      { copyLines: [], absentLines: [] },
-    );
-
-    if (linesList.absentLines?.length) {
-      setAbsentLines(linesList.absentLines);
-      setCopyLines(linesList.copyLines);
-      setVisibleCopyDialog(true);
-    } else {
-      handleCopyOrder();
-    }
-  }, [goods, handleCopyOrder, order]);
-
-  const handleDelete = useCallback(() => {
-    if (!id) {
-      return;
-    }
-
-    Alert.alert('Вы уверены, что хотите удалить заявку?', '', [
-      {
-        text: 'Да',
-        onPress: async () => {
-          setScreenState('deleting');
-          await sleep(1);
-          const res = await docDispatch(documentActions.removeDocument(id));
-          if (res.type === 'DOCUMENTS/REMOVE_ONE_SUCCESS') {
-            setScreenState('deleted');
-          } else {
-            setScreenState('idle');
-          }
-        },
-      },
-      {
-        text: 'Отмена',
-      },
-    ]);
-  }, [docDispatch, id]);
-
-  const handleAddDeletelList = useCallback(
-    (lineId: string, checkedId: string) => {
-      if (checkedId) {
-        const newList = delList.filter((i) => i !== checkedId);
-        setDelList(newList);
-      } else {
-        setDelList([...delList, lineId]);
-      }
-    },
-    [delList],
-  );
-
-  const handleDeleteDocLine = useCallback(() => {
-    Alert.alert('Вы уверены, что хотите удалить позиции документа?', '', [
-      {
-        text: 'Да',
-        onPress: () => {
-          for (const item of delList) {
-            dispatch(documentActions.removeDocumentLine({ docId: id, lineId: item }));
-          }
-          setDelList([]);
-        },
-      },
-      {
-        text: 'Отмена',
-      },
-    ]);
-  }, [delList, dispatch, id]);
-
-  const sendDoc = useSendDocs(order ? [order] : []);
-
-  const [visibleSendDialog, setVisibleSendDialog] = useState(false);
-
-  const handleSendDocument = useCallback(async () => {
-    setVisibleSendDialog(false);
-    setScreenState('sending');
-    await sendDoc();
-    await handleSendRemainsRequest();
-    setScreenState('sent');
-  }, [handleSendRemainsRequest, sendDoc]);
-
-  const handleSaveDocument = useCallback(() => {
-    if (!order) {
-      return;
-    }
+  const handleCleanFormParams = useCallback(() => {
     dispatch(
-      documentActions.updateDocument({
-        docId: id,
-        document: { ...order, status: 'READY' },
+      appActions.setFormParams({
+        filterContact: undefined,
+        filterOutlet: undefined,
+        filterDateBegin: '',
+        filterDateEnd: '',
+        filterStatusList: undefined,
       }),
     );
-    navigation.goBack();
-  }, [dispatch, id, navigation, order]);
+    setSearchQuery('');
+  }, [dispatch]);
+
+  const outlet = refSelectors.selectByName<IOutlet>('outlet')?.data?.find((e) => e.id === filterOutlet?.id);
 
   useEffect(() => {
-    if (screenState === 'sent' || screenState === 'deleted' || screenState === 'copied') {
-      setScreenState('idle');
-      if (screenState !== 'copied') {
-        navigation.goBack();
-      }
+    if (!!filterContact && !!filterOutlet && filterContact.id !== outlet?.company.id) {
+      dispatch(
+        appActions.setFormParams({
+          filterOutlet: undefined,
+        }),
+      );
     }
-  }, [navigation, screenState]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatch, filterContact?.id, outlet?.company.id]);
 
-  const actionsMenu = useCallback(() => {
-    showActionSheet(
-      isBlocked
-        ? order?.status === 'SENT' || readonly
-          ? [
-              {
-                title: 'Копировать заявку',
-                onPress: handleCheckLines,
-              },
-              {
-                title: 'Отмена',
-                type: 'cancel',
-              },
-            ]
-          : [
-              {
-                title: 'Копировать заявку',
-                onPress: handleCheckLines,
-              },
-              {
-                title: 'Удалить заявку',
-                type: 'destructive',
-                onPress: handleDelete,
-              },
-              {
-                title: 'Отмена',
-                type: 'cancel',
-              },
-            ]
-        : [
-            {
-              title: 'Добавить товар',
-              onPress: handleAddOrderLine,
-            },
-            {
-              title: 'Редактировать данные',
-              onPress: handleEditOrderHead,
-            },
-            {
-              title: 'Отправить запрос за дебиторской задолженностью',
-              onPress: handleOpenDebtDialog,
-            },
-            {
-              title: 'Копировать заявку',
-              onPress: handleCheckLines,
-            },
-            {
-              title: 'Удалить заявку',
-              type: 'destructive',
-              onPress: handleDelete,
-            },
-            {
-              title: 'Отмена',
-              type: 'cancel',
-            },
-          ],
-    );
-  }, [
-    showActionSheet,
-    isBlocked,
-    order?.status,
-    readonly,
-    handleCheckLines,
-    handleDelete,
-    handleAddOrderLine,
-    handleEditOrderHead,
-  ]);
+  useEffect(() => {
+    // Инициализируем параметры
+    handleCleanFormParams();
+  }, [handleCleanFormParams]);
+
+  const orderList = useMemo(
+    () =>
+      orders
+        ?.filter((i) =>
+          i.documentType?.name === 'order'
+            ? i?.head?.contact.name ||
+              i?.head?.outlet.name ||
+              i.number ||
+              i.documentDate ||
+              i.head.onDate ||
+              outlets?.find((a) => a.id === i.head.outlet.id)?.address
+              ? i?.head?.contact?.name.toUpperCase().includes(searchQuery.toUpperCase()) ||
+                i?.head?.outlet?.name.toUpperCase().includes(searchQuery.toUpperCase()) ||
+                i.number.toUpperCase().includes(searchQuery.toUpperCase()) ||
+                getDateString(i.documentDate).toUpperCase().includes(searchQuery.toUpperCase()) ||
+                getDateString(i.head.onDate).toUpperCase().includes(searchQuery.toUpperCase()) ||
+                outlets
+                  ?.find((a) => a.id === i.head.outlet.id)
+                  ?.address.toUpperCase()
+                  .includes(searchQuery.toUpperCase())
+              : true
+            : false,
+        )
+        ?.sort(
+          (a, b) =>
+            new Date(b.documentDate.slice(0, 10)).getTime() - new Date(a.documentDate.slice(0, 10)).getTime() ||
+            new Date(b.head.onDate).getTime() - new Date(a.head.onDate).getTime(),
+        ),
+    [orders, outlets, searchQuery],
+  );
+
+  const withParams =
+    !!filterContact || !!filterOutlet || !!filterDateBegin || !!filterDateEnd || filterStatusList.length > 0;
+
+  const filteredOrderList = useMemo(() => {
+    if (filterContact || filterOutlet || filterDateBegin || filterDateEnd || filterStatusList.length) {
+      return orderList.filter(
+        (i) =>
+          (filterContact?.id ? i.head.contact.id === filterContact.id : true) &&
+          (filterOutlet?.id ? i.head.outlet.id === filterOutlet.id : true) &&
+          (filterDateBegin
+            ? new Date(filterDateBegin).getTime() <= new Date(i.head.onDate.slice(0, 10)).getTime()
+            : true) &&
+          (filterDateEnd
+            ? new Date(filterDateEnd).getTime() >= new Date(i.head.onDate.slice(0, 10)).getTime()
+            : true) &&
+          (filterStatusList.length
+            ? filterStatusList.find((item) => item.id.toUpperCase() === i.status.toUpperCase())
+            : true),
+      );
+    } else {
+      return orderList;
+    }
+  }, [filterContact, filterDateBegin, filterDateEnd, filterOutlet, filterStatusList, orderList]);
+
+  const debets = refSelectors.selectByName<IDebt>('debt')?.data;
+
+  const [status, setStatus] = useState<Status>('all');
+
+  const filteredListByStatus: IListItemProps[] = useMemo(() => {
+    const res =
+      status === 'all'
+        ? filteredOrderList
+        : status === 'active'
+          ? filteredOrderList.filter((e) => e.status !== 'PROCESSED')
+          : status === 'archive'
+            ? filteredOrderList.filter((e) => e.status === 'PROCESSED')
+            : status === 'refuse'
+              ? filteredOrderList.filter((e) => e.status === 'DRAFT' && e.errorMessage)
+              : [];
+
+    return res.map((i) => {
+      const address = outlets?.find((o) => i?.head?.outlet.id === o.id)?.address;
+      return {
+        id: i.id,
+        title: i.head.outlet?.name,
+        documentDate: getDateString(i.documentDate),
+        status: i.status,
+        subtitle: `${address ? `${address}\n` : ''}№ ${i.number} от ${getDateString(i.documentDate)} на ${getDateString(
+          i.head?.onDate,
+        )}`,
+        isFromRoute: !!i.head.route,
+        lineCount: i.lines.length,
+        errorMessage: i.errorMessage,
+        sentDate: i.sentDate,
+        erpCreationDate: i.erpCreationDate,
+      } as IListItemProps;
+    });
+  }, [status, filteredOrderList, outlets]);
+
+  const sections = useMemo(
+    () =>
+      filteredListByStatus.reduce<SectionDataProps>((prev, item) => {
+        const sectionTitle = item.documentDate;
+        const sectionExists = prev.some(({ title }) => title === sectionTitle);
+        if (sectionExists) {
+          return prev.map((section) =>
+            section.title === sectionTitle ? { ...section, data: [...section.data, item] } : section,
+          );
+        }
+
+        return [
+          ...prev,
+          {
+            title: sectionTitle,
+            data: [item],
+          },
+        ];
+      }, []),
+    [filteredListByStatus],
+  );
+
+  const statusTypesSection = useMemo(
+    () =>
+      status === 'all'
+        ? statusTypes
+        : status === 'active'
+          ? statusTypes.filter((e) => e.id !== 'PROCESSED')
+          : status === 'archive'
+            ? statusTypes.filter((e) => e.id === 'PROCESSED')
+            : [],
+    [status],
+  );
+
+  const [delList, setDelList] = useState<IDelList>({});
+  const isDelList = useMemo(() => !!Object.keys(delList).length, [delList]);
+
+  const handleDeleteDocs = useCallback(() => {
+    const docIds = Object.keys(delList);
+
+    const deleteDocs = () => {
+      docDispatch(documentActions.removeDocuments(docIds));
+      setDelList({});
+    };
+
+    deleteSelectedItems(delList, deleteDocs);
+  }, [delList, docDispatch]);
+
+  const handleAddDocument = useCallback(() => {
+    navigation.navigate('OrderEdit');
+  }, [navigation]);
 
   const renderRight = useCallback(
-    () =>
-      isBlocked ? (
-        <View style={styles.buttons}>
-          {order?.status === 'READY' && (
-            <SendButton onPress={() => setVisibleSendDialog(true)} disabled={screenState !== 'idle' || loading} />
-          )}
-          <MenuButton actionsMenu={actionsMenu} disabled={screenState !== 'idle'} />
-        </View>
-      ) : (
-        <View style={styles.buttons}>
-          {isDelList ? (
-            <DeleteButton onPress={handleDeleteDocLine} />
-          ) : (
-            <>
-              {order?.status === 'DRAFT' && (
-                <SaveDocument onPress={handleSaveDocument} disabled={screenState !== 'idle'} />
-              )}
-              <SendButton onPress={() => setVisibleSendDialog(true)} disabled={screenState !== 'idle' || loading} />
-              <AddButton onPress={handleAddOrderLine} disabled={screenState !== 'idle'} />
-              <MenuButton actionsMenu={actionsMenu} disabled={screenState !== 'idle'} />
-            </>
-          )}
-        </View>
-      ),
-    [
-      isBlocked,
-      order?.status,
-      screenState,
-      actionsMenu,
-      isDelList,
-      handleDeleteDocLine,
-      handleSaveDocument,
-      loading,
-      handleAddOrderLine,
-    ],
+    () => (
+      <View style={styles.buttons}>
+        {isDelList ? (
+          <DeleteButton onPress={handleDeleteDocs} />
+        ) : (
+          <>
+            <AddButton onPress={handleAddDocument} />
+            <FilterButton
+              onPress={() => setFilterVisible((prev) => !prev)}
+              visible={filterVisible}
+              withParams={withParams || !!searchQuery}
+            />
+          </>
+        )}
+      </View>
+    ),
+    [filterVisible, handleAddDocument, handleDeleteDocs, isDelList, searchQuery, withParams],
   );
 
-  const renderLeft = useCallback(
-    () => !isBlocked && isDelList && <CloseButton onPress={() => setDelList([])} />,
-    [isDelList, isBlocked],
-  );
+  const renderLeft = useCallback(() => isDelList && <CloseButton onPress={() => setDelList({})} />, [isDelList]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerLeft: isDelList ? renderLeft : navBackButton,
+      headerLeft: isDelList ? renderLeft : navBackDrawer,
       headerRight: renderRight,
-      title: isDelList ? `Выделено позиций: ${delList.length}` : 'Заявка',
+      title: isDelList ? `Выделено заявок: ${Object.values(delList).length}` : 'Заявки',
     });
-  }, [delList.length, isDelList, navigation, renderLeft, renderRight]);
+  }, [delList, isDelList, navigation, renderLeft, renderRight]);
 
-  const [orderLine, setOrderLine] = useState<IOrderItemLine | undefined>();
+  const [showDateBegin, setShowDateBegin] = useState(false);
+  const handleApplyDateBegin = (_event: any, selectedDateBegin: Date | undefined) => {
+    setShowDateBegin(false);
 
-  const handlePressOrderLine = useCallback(
-    (item: IOrderLine) => !isBlocked && setOrderLine({ mode: 1, docId: id, item }),
-    [id, isBlocked],
-  );
+    if (selectedDateBegin && _event.type !== 'dismissed') {
+      dispatch(appActions.setFormParams({ filterDateBegin: selectedDateBegin.toISOString().slice(0, 10) }));
+    }
+  };
+  const handlePresentDateBegin = () => {
+    Keyboard.dismiss();
+    setShowDateBegin(true);
+  };
 
-  const renderItem = useCallback(
-    ({ item }: { item: IOrderLine }) => {
-      const checkedId = delList.find((i) => i === item.id) || '';
-      const itemPackages = packages?.filter((e) => e.good.id === item.good.id);
+  const [showDateEnd, setShowDateEnd] = useState(false);
 
-      return (
-        <View style={!item.package && itemPackages?.length > 0 ? { backgroundColor: globalColors.lavenderLight } : {}}>
-          <OrderItem
-            key={item.id}
-            item={item}
-            onPress={() => handlePressOrderLine(item)}
-            isChecked={checkedId ? true : false}
-            onLongPress={() => !isBlocked && handleAddDeletelList(item.id, checkedId)}
-            isDelList={isDelList}
-            isRemains={isUseRemains}
-          />
-        </View>
+  const handleApplyDateEnd = (_event: any, selectedDateEnd: Date | undefined) => {
+    setShowDateEnd(false);
+
+    if (selectedDateEnd && _event.type !== 'dismissed') {
+      dispatch(appActions.setFormParams({ filterDateEnd: selectedDateEnd.toISOString().slice(0, 10) }));
+    }
+  };
+
+  const handlePresentDateEnd = () => {
+    Keyboard.dismiss();
+    setShowDateEnd(true);
+  };
+
+  const handleSearchContact = useCallback(() => {
+    navigation.navigate('SelectRefItem', {
+      refName: 'contact',
+      fieldName: 'filterContact',
+      value: filterContact && [filterContact],
+    });
+  }, [filterContact, navigation]);
+
+  const handleSearchOutlet = useCallback(() => {
+    navigation.navigate('SelectRefItem', {
+      refName: 'outlet',
+      fieldName: 'filterOutlet',
+      clause: filterContact?.id
+        ? {
+            companyId: filterContact?.id,
+          }
+        : undefined,
+      value: filterOutlet && [filterOutlet],
+      descrFieldName: 'address',
+    });
+  }, [filterContact?.id, filterOutlet, navigation]);
+
+  const handleFilterStatus = useCallback(
+    (value: IListItem) => {
+      dispatch(
+        appActions.setFormParams({
+          filterStatusList: filterStatusList.find((item) => item.id === value.id)
+            ? filterStatusList.filter((i) => i.id !== value.id)
+            : [...filterStatusList, value],
+        }),
       );
     },
-    [delList, handleAddDeletelList, handlePressOrderLine, isBlocked, isDelList, isUseRemains, packages],
+    [dispatch, filterStatusList],
   );
 
-  const isEditable = useMemo(() => (order ? ['DRAFT', 'READY'].includes(order?.status) : false), [order]);
+  const renderItem: ListRenderItem<IListItemProps> = ({ item }) => {
+    const debt = debets?.find((d) => d.id === orderList.find((o) => o.id === item.id)?.head?.contact.id);
+    const ex = orderList.find((o) => o.id === item.id);
+
+    return (
+      <ScreenListItem
+        key={item.id}
+        {...item}
+        onPress={() =>
+          isDelList
+            ? setDelList(getDelList(delList, item.id, item.status!))
+            : navigation.navigate('OrderView', { id: item.id })
+        }
+        onLongPress={() => setDelList(getDelList(delList, item.id, item.status!))}
+        checked={!!delList[item.id]}
+      >
+        {!!debt?.saldoDebt && (
+          <MediumText>
+            {`Просрочено: ${formatValue({ type: 'currency', decimals: 2 }, debt?.saldoDebt ?? 0)}, ${debt.dayLeft} дн.`}
+          </MediumText>
+        )}
+        {ex?.head?.expeditor ? <MediumText>Экспедитор: {ex?.head?.expeditor?.name}</MediumText> : null}
+      </ScreenListItem>
+    );
+  };
+
+  const renderSectionHeader = ({ section }: any) => (
+    <SubTitle style={[styles.header, styles.sectionTitle]}>{section.title}</SubTitle>
+  );
+
+  const renderSectionFooter = useCallback(
+    (item: any) => (status === 'all' && sections ? <OrderListTotal sectionOrders={item.section} /> : null),
+    [sections, status],
+  );
 
   const isFocused = useIsFocused();
   if (!isFocused) {
     return <AppActivityIndicator />;
   }
 
-  if (screenState === 'deleting' || screenState === 'copying') {
-    return (
-      <View style={styles.container}>
-        <View style={styles.containerCenter}>
-          <LargeText>{screenState === 'deleting' ? 'Удаление документа...' : 'Копирование документа...'}</LargeText>
-          <AppActivityIndicator style={{}} />
-        </View>
-      </View>
-    );
-  }
-
-  if (!order) {
-    return (
-      <View style={[styles.container, styles.alignItemsCenter]}>
-        <LargeText>Документ не найден</LargeText>
-      </View>
-    );
-  }
-
+  const statusList: StatusTypes[] = [
+    {
+      name: 'Все',
+      status: 'all',
+    },
+    {
+      name: 'Текущие',
+      status: 'active',
+    },
+    {
+      name: 'Отказ',
+      status: 'refuse',
+    },
+    {
+      name: 'Архив',
+      status: 'archive',
+    },
+  ];
   return (
-    <>
-      <View style={styles.container}>
-        {orderLine && <OrderLineEdit orderLine={orderLine} onDismiss={() => setOrderLine(undefined)} />}
-        <InfoBlock
-          colorLabel={getStatusColor(order?.status || 'DRAFT')}
-          title={order.head?.outlet?.name}
-          onPress={() => (isEditable ? handleEditOrderHead() : setIsDateVisible(!isDateVisible))}
-          editable={isEditable}
-          disabled={isDelList}
-          isBlocked={isBlocked}
-          isFromRoute={order.head.route ? true : false}
-        >
-          <View style={styles.directionColumn}>
-            {address ? <MediumText>Адрес: {address}</MediumText> : null}
-            {order.head.road ? <MediumText>Маршрут: {order.head.road.name}</MediumText> : null}
-            <MediumText>{`№ ${order.number} от ${getDateString(order.documentDate)} на ${getDateString(
-              order.head?.onDate,
-            )}`}</MediumText>
-            {!routeId && contact ? (
-              <>
-                <LargeText style={localStyles.contract}>{`Договор №${contact?.contractNumber || '-'} от ${getDateString(
-                  contact.contractDate,
-                )}`}</LargeText>
-                <MediumText>{`Условия оплаты: ${contact.paycond}`}</MediumText>
-              </>
-            ) : null}
-
-            <MediumText style={debtTextStyle}>
-              {(!!debt?.saldo && debt.saldo < 0
-                ? `Предоплата: ${formatValue({ type: 'currency', decimals: 2 }, Math.abs(debt.saldo))}`
-                : `Задолженность: ${formatValue({ type: 'currency', decimals: 2 }, debt?.saldo ?? 0)}`) || 0}
-            </MediumText>
-            {!!debt?.saldoDebt && (
-              <MediumText>
-                {`Просрочено: ${formatValue({ type: 'currency', decimals: 2 }, debt.saldoDebt)}, ${
-                  debt.dayLeft || 0
-                } дн.`}
-              </MediumText>
-            )}
-            {limitSum ? (
-              <View style={styles.rowCenter}>
-                <MediumText>Лимит: {formatValue({ type: 'currency', decimals: 2 }, limitSum)}</MediumText>
-              </View>
-            ) : null}
-            {isUseRemains && depart ? <LargeText style={localStyles.contract}>{`Склад: ${depart}`}</LargeText> : null}
-            {isUseRemains && order.head.expeditor ? (
-              <LargeText style={localStyles.contract}>{`Экспедитор: ${order.head.expeditor.name}`}</LargeText>
-            ) : null}
-
-            {order.head.comment ? (
-              <View style={styles.rowCenter}>
-                <MediumText>Комментарий: {order.head.comment || ''}</MediumText>
-              </View>
-            ) : null}
-            {isDateVisible && <DateInfo sentDate={order.sentDate} erpCreationDate={order.erpCreationDate} />}
+    <AppScreen>
+      <FilterButtons status={status} onPress={setStatus} style={styles.marginBottom5} statusList={statusList} />
+      {filterVisible && (
+        <>
+          <View style={styles.flexDirectionRow}>
+            <Searchbar
+              placeholder="Поиск"
+              onChangeText={setSearchQuery}
+              value={searchQuery}
+              style={[styles.flexGrow, styles.searchBar]}
+              selectionColor={searchStyle}
+            />
           </View>
-        </InfoBlock>
-        <FlashList
-          data={order.lines}
-          renderItem={renderItem}
-          estimatedItemSize={60}
-          ItemSeparatorComponent={ItemSeparator}
-          keyExtractor={keyExtractor}
-          extraData={[delList, isBlocked]}
-          keyboardShouldPersistTaps={'handled'}
-        />
-      </View>
-      {!!order.lines.length && (
-        <OrderTotal onPress={() => setIsGroupVisible(!isGroupVisible)} isGroupVisible={isGroupVisible} order={order} />
+          <View style={[localStyles.filter, { borderColor: colors.primary }]}>
+            <SelectableInput label="Организация" value={filterContact?.name || ''} onPress={handleSearchContact} />
+            <View style={localStyles.marginTop}>
+              <SelectableInput label="Магазин" value={filterOutlet?.name || ''} onPress={handleSearchOutlet} />
+            </View>
+            <View style={[styles.flexDirectionRow, localStyles.marginTop]}>
+              <View style={localStyles.width}>
+                <SelectableInput
+                  label="С даты отгрузки"
+                  value={filterDateBegin ? getDateString(filterDateBegin) : ''}
+                  onPress={handlePresentDateBegin}
+                  style={[!filterDateBegin && localStyles.fontSize]}
+                />
+              </View>
+              <View style={localStyles.width}>
+                <SelectableInput
+                  label="По дату отгрузки"
+                  value={filterDateEnd ? getDateString(filterDateEnd || '') : ''}
+                  onPress={handlePresentDateEnd}
+                  style={[!filterDateEnd && localStyles.fontSize, localStyles.marginInput]}
+                />
+              </View>
+            </View>
+            <View style={[localStyles.marginTop, localStyles.status]}>
+              {statusTypesSection.map((elem) => (
+                <View key={elem.id}>
+                  <Checkbox
+                    key={elem.id}
+                    title={elem.value}
+                    selected={!!filterStatusList.find((i) => i.id === elem.id)}
+                    onSelect={() => handleFilterStatus(elem)}
+                  />
+                </View>
+              ))}
+            </View>
+            <View style={localStyles.container}>
+              <PrimeButton
+                icon={'delete-outline'}
+                onPress={handleCleanFormParams}
+                disabled={
+                  !(
+                    filterContact ||
+                    filterOutlet ||
+                    filterDateBegin ||
+                    filterDateEnd ||
+                    filterStatusList.length ||
+                    searchQuery
+                  )
+                }
+              >
+                {'Очистить'}
+              </PrimeButton>
+            </View>
+          </View>
+          <ItemSeparator />
+        </>
       )}
-      <SimpleDialog
-        visible={visibleSendDialog}
-        title={'Внимание!'}
-        text={'Вы уверены, что хотите отправить документ?'}
-        onCancel={() => setVisibleSendDialog(false)}
-        onOk={handleSendDocument}
-        okDisabled={loading}
+      <SectionList
+        sections={sections}
+        renderItem={renderItem}
+        keyExtractor={keyExtractor}
+        ItemSeparatorComponent={ItemSeparator}
+        renderSectionHeader={renderSectionHeader}
+        ListEmptyComponent={EmptyList}
+        renderSectionFooter={renderSectionFooter}
+        keyboardShouldPersistTaps={'handled'}
       />
-      <SimpleDialog
-        visible={visibleDebtDialog}
-        title={'Внимание!'}
-        text={'Отправить запрос на получение дебиторской задолженности?'}
-        onCancel={() => setVisibleDebtDialog(false)}
-        onOk={handleSendDebtRequest}
-        okDisabled={loading}
-      />
-      <OrderCopyDialog
-        lines={absentLines}
-        visible={visibleCopyDialog}
-        onOk={() => {
-          setVisibleCopyDialog(false);
-          handleCopyOrder();
-        }}
-        onCancel={() => setVisibleCopyDialog(false)}
-      />
-    </>
+      {showDateBegin && (
+        <DateTimePicker
+          testID="dateTimePicker"
+          value={new Date(filterDateBegin || new Date())}
+          mode="date"
+          display={Platform.OS === 'ios' ? 'inline' : 'default'}
+          onChange={handleApplyDateBegin}
+        />
+      )}
+      {showDateEnd && (
+        <DateTimePicker
+          testID="dateTimePicker"
+          value={new Date(filterDateEnd || new Date())}
+          mode="date"
+          display={Platform.OS === 'ios' ? 'inline' : 'default'}
+          onChange={handleApplyDateEnd}
+        />
+      )}
+    </AppScreen>
   );
 };
 
-export default OrderViewScreen;
+export default OrderListScreen;
 
 const localStyles = StyleSheet.create({
-  contract: { fontWeight: 'bold', opacity: 0.9, fontSize: 15 },
+  filter: {
+    paddingTop: 5,
+    marginVertical: 5,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderRadius: 2,
+  },
+  marginTop: {
+    marginTop: -5,
+  },
+  width: {
+    width: '50%',
+  },
+  fontSize: {
+    fontSize: 14,
+  },
+  marginInput: {
+    marginLeft: 5,
+  },
+  container: {
+    alignItems: 'center',
+    marginTop: -4,
+  },
+  status: {
+    marginHorizontal: 5,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
 });

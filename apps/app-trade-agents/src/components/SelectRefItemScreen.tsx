@@ -88,16 +88,21 @@ const SelectRefItemScreen = () => {
     if (!list) {
       return;
     }
+    const query = searchQuery.toUpperCase();
     setFilteredList(
       list
-        .filter((i) => i[refFieldName]?.toUpperCase().includes(searchQuery.toUpperCase()))
+        .filter(
+          (i) =>
+            i[refFieldName]?.toUpperCase().includes(query) ||
+            (descrFieldName ? i[descrFieldName]?.toUpperCase().includes(query) : false),
+        )
         .sort((a) => {
           return checkedItem?.find((v) => v.id === a.id) ? -1 : 1;
         }),
     );
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMulti, list, refFieldName, searchQuery, value]);
+  }, [isMulti, list, refFieldName, descrFieldName, searchQuery, value]);
 
   useEffect(() => {
     if (!filterVisible && searchQuery) {
@@ -105,8 +110,10 @@ const SelectRefItemScreen = () => {
     }
   }, [filterVisible, searchQuery]);
 
-  const refList = React.useRef<FlatList<IReferenceData>>(null);
-  useScrollToTop(refList);
+  // FlashList совместим с хуком в рантайме (scrollToOffset), но типы useScrollToTop
+  // не учитывают null из useRef в типах React 19 — приводим явно
+  const refList = React.useRef<FlashList<IReferenceData> | null>(null);
+  useScrollToTop(refList as unknown as React.RefObject<FlatList<IReferenceData>>);
 
   const handleSelectItem = useCallback(
     (item: IReferenceData) => {

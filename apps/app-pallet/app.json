@@ -2,7 +2,7 @@
   "expo": {
     "name": "GDMN Паллета",
     "slug": "gdmn-pallet",
-    "version": "0.4.1",
+    "version": "0.4.5",
     "githubUrl": "https://github.com/stasgm/gdmn-mob",
     "orientation": "default",
     "icon": "./assets/icon.png",
@@ -26,7 +26,7 @@
     "android": {
       "package": "com.gsbelarus.palletlist",
       "permissions": ["CAMERA", "VIBRATE"],
-      "versionCode": 10
+      "versionCode": 14
     },
     "web": {
       "favicon": "./assets/favicon.png"

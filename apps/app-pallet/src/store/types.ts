@@ -33,9 +33,15 @@ export interface IPalletHead extends IHead {
   // comment?: string;
 }
 
+export interface IMark {
+  id: string;
+  code: string;
+}
+
 export interface IPalletLine extends IEntity {
   barcode: string;
   sortOrder?: number;
+  mark?: IMark;
 }
 
 export type IPalletDocument = MandateProps<IDocument<IPalletHead, IPalletLine>, 'head' | 'lines'>;

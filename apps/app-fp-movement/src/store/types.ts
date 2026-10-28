@@ -117,6 +117,12 @@ export interface IBasedLine extends IEntity {
   scannedBarcode?: string;
   usedRemains?: boolean; // используются остатки в приложении
   flag?: string; // флаг (последний символ), означает тип тары
+  mark?: IMark; // маркировка (КМ / КА)
+}
+
+export interface IMark {
+  id: string; // id записи справочника label
+  code: string; // code записи справочника label
 }
 
 export interface ISendingLine extends IEntity {
@@ -131,6 +137,7 @@ export interface ISendingLine extends IEntity {
   fromCell?: string; // номер ячейки
   toCell?: string; // номер ячейки
   storeDate?: string; // дата постановки в ячейку
+  mark?: IMark; // маркировка (КМ / КА)
 }
 
 export interface IMoveLine extends IBasedLine {

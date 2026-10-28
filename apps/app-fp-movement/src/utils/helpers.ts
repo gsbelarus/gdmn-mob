@@ -115,9 +115,33 @@ export const getLastMovingPos = (pos: ICellRef, lines: IMoveLine[]) => {
   return { from, to };
 };
 
-export const getCellItem = (str: string) => {
-  const cellArray = str.split('-');
-  return { chamber: cellArray[0], row: cellArray[1], cell: cellArray[2] } as ICellName;
+export const getCellItem = (str: string): ICellName => {
+  const parts = str.split('-').filter((p) => p.length > 0);
+
+  if (parts.length >= 3) {
+    const [chamber, row, cell] = parts.slice(-3);
+    return { chamber, row, cell } as ICellName;
+  }
+
+  if (parts.length === 2) {
+    const [first, second] = parts;
+    const hasLetter = /[A-Za-zА-Яа-я]/.test(first);
+
+    // If first part has a letter, treat it as chamber (no row).
+    // Otherwise treat it as row (no chamber).
+    if (hasLetter) {
+      return { chamber: first, row: '', cell: second } as ICellName;
+    }
+
+    return { chamber: '', row: first, cell: second } as ICellName;
+  }
+
+  if (parts.length === 1) {
+    return { chamber: '', row: '', cell: parts[0] } as ICellName;
+  }
+
+  // Fallback for empty/invalid strings
+  return { chamber: '', row: '', cell: '' } as ICellName;
 };
 
 // Формирует модель с ячейками по подразделениям
@@ -364,6 +388,14 @@ export const getDocToSend = (
           box: (i as IFreeShipmentLine).box,
           storeDate: (i as IMoveLine).storeDate,
           flag: i.flag,
+          ...(i.mark
+            ? {
+                mark: {
+                  id: i.mark.id,
+                  code: i.mark.code,
+                },
+              }
+            : {}),
         }) as ISendingLine,
     ),
   };
@@ -438,23 +470,32 @@ const getRemainsByGoodId = (remains: IRemainsData[] /*, linesQuantity: IGoodQuan
   }, {});
 };
 
-export const alertWithSound = (label: string, text: string, onClose?: () => void) => {
-  const playSound = async () => {
-    const { sound } = await Audio.Sound.createAsync(require('../../assets/error.wav'));
-    await sound.playAsync();
-  };
+// Звук ошибки загружается один раз: создание нового Audio.Sound на каждый
+// неудачный скан течёт и замедляет серию ошибок
+let errorSoundPromise: Promise<Audio.Sound> | undefined;
 
-  playSound();
+const getErrorSound = (): Promise<Audio.Sound> => {
+  if (!errorSoundPromise) {
+    errorSoundPromise = Audio.Sound.createAsync(require('../../assets/error.wav')).then(({ sound }) => sound);
+  }
+  return errorSoundPromise;
+};
+
+const playErrorSound = async () => {
+  try {
+    (await getErrorSound()).replayAsync();
+  } catch {
+    // ошибка загрузки звука не должна мешать алерту
+  }
+};
+
+export const alertWithSound = (label: string, text: string, onClose?: () => void) => {
+  playErrorSound();
   Alert.alert(label, text, [{ text: 'OK', onPress: onClose }]);
 };
 
 export const alertWithSoundMulti = (label: string, text: string, onOk: () => void, onClose?: () => void) => {
-  const playSound = async () => {
-    const { sound } = await Audio.Sound.createAsync(require('../../assets/error.wav'));
-    await sound.playAsync();
-  };
-
-  playSound();
+  playErrorSound();
 
   Alert.alert(`${label}`, `${text}`, [
     {

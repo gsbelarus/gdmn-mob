@@ -40,6 +40,7 @@ export const DocLineScreen = () => {
 
   const settings = useSelector((state) => state.settings?.data);
   const showZeroRemains = settings?.showZeroRemains?.data;
+  const editInventoryPrice = settings?.editInventoryPrice?.data as boolean;
 
   const document = docSelectors.selectByDocId<IMovementDocument>(docId);
   const documentTypes = refSelectors.selectByName<IDocumentType>('documentType')?.data;
@@ -50,6 +51,10 @@ export const DocLineScreen = () => {
   );
 
   const goods = refSelectors.selectByName<IGood>('good')?.data;
+
+  const isInventoryDoc =
+    document?.documentType?.subtype === 'inventory' && document?.documentType?.name === 'inventory';
+  const canEditPrice = !isInventoryDoc || editInventoryPrice;
 
   useEffect(() => {
     KeyEvent.onKeyDownListener((keyEvent: any) => {
@@ -142,7 +147,7 @@ export const DocLineScreen = () => {
     ),
     [
       disabledSave,
-      document?.documentType.name,
+      document?.documentType,
       documentType?.isControlRemains,
       goods,
       item?.good.id,
@@ -172,6 +177,7 @@ export const DocLineScreen = () => {
         onSetLine={setLine}
         onSetDisabledSave={setDisabledSave}
         isSumWNds={Boolean(document?.documentType.isSumWNds)}
+        canEditPrice={canEditPrice}
       />
     </AppInputScreen>
   );

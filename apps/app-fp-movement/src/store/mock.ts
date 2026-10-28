@@ -376,6 +376,13 @@ export const messageFpMovement: IMessage<MessageType>[] = [
             },
 
             {
+              id: '857817085',
+              name: 'Колбаса вареная докторская',
+              shcode: '1574',
+              goodGroupId: '147041713',
+              isCattle: 1,
+            },
+            {
               id: '857817086',
               name: 'Колбаса вареная молочная',
               shcode: '1545',
@@ -532,7 +539,7 @@ export const messageFpMovement: IMessage<MessageType>[] = [
               id: '147067756',
               shcode: '1504',
               name: 'Ветчина ароматная',
-              goodGroupId: '147041711',
+              goodGroupId: '1470417111',
               isCattle: 0,
             },
             {
@@ -1759,26 +1766,6 @@ export const messageFpMovement: IMessage<MessageType>[] = [
                   goodId: '807686297',
                   q: 150.192,
                 },
-              ],
-              '147030694': [
-                { goodId: '857817086', q: 50 },
-                { goodId: '955211845', q: 25 },
-                { goodId: '807686298', q: 30 },
-              ],
-              '147016473': [
-                { goodId: '147048739', q: 100 },
-                { goodId: '147067788', q: 20 },
-                { goodId: '111852486', q: 15 },
-              ],
-              '147030695': [
-                { goodId: '955211846', q: 40 },
-                { goodId: '147035338', q: 60 },
-                { goodId: '1572500927', q: 35 },
-              ],
-              '147030696': [
-                { goodId: '153367898', q: 80 },
-                { goodId: '147066840', q: 45 },
-                { goodId: '807686299', q: 22 },
               ],
             },
           ],

@@ -38,9 +38,9 @@ export const WaybillEditScreen = () => {
 
   const documents = useFilteredDocList<IWaybillDocument>('waybill');
 
-  const scanType = refSelectors
+  const waybillType = refSelectors
     .selectByName<IReference<IDocumentType>>('documentType')
-    ?.data.find((t) => t.name === 'scan');
+    ?.data.find((t) => t.name === 'waybill');
 
   const doc = useMemo(() => documents?.find((e) => e.id === id), [documents, id]);
 
@@ -91,9 +91,9 @@ export const WaybillEditScreen = () => {
 
   useEffect(() => {
     if (screenState === 'saving') {
-      if (!scanType) {
+      if (!waybillType) {
         setScreenState('idle');
-        return Alert.alert('Ошибка!', 'Тип документа для сканирования не найден', [{ text: 'OK' }]);
+        return Alert.alert('Ошибка!', 'Тип документа ЭТТН не найден', [{ text: 'OK' }]);
       }
       if (!docNumber || !docDate /*|| !docFromContact || !docToContact*/) {
         setScreenState('idle');
@@ -106,7 +106,7 @@ export const WaybillEditScreen = () => {
       if (!id) {
         const newDoc: IWaybillDocument = {
           id: docId,
-          documentType: scanType,
+          documentType: waybillType,
           number: docNumber && docNumber.trim(),
           documentDate: docDate,
           status: 'DRAFT',
@@ -122,7 +122,7 @@ export const WaybillEditScreen = () => {
 
         dispatch(documentActions.addDocument(newDoc));
 
-        navigation.dispatch(StackActions.replace('ScanView', { id: newDoc.id }));
+        navigation.dispatch(StackActions.replace('WaybillView', { id: newDoc.id }));
       } else {
         if (!doc) {
           setScreenState('idle');
@@ -137,7 +137,7 @@ export const WaybillEditScreen = () => {
           number: docNumber && docNumber.trim(),
           status: docStatus || 'DRAFT',
           documentDate: docDate,
-          documentType: scanType,
+          documentType: waybillType,
           errorMessage: undefined,
           head: {
             ...doc.head,
@@ -155,7 +155,7 @@ export const WaybillEditScreen = () => {
         navigation.navigate('WaybillView', { id });
       }
     }
-  }, [scanType, docNumber, docDate, id, docComment, dispatch, navigation, doc, docStatus, screenState]);
+  }, [waybillType, docNumber, docDate, id, docComment, dispatch, navigation, doc, docStatus, screenState]);
 
   const renderRight = useCallback(
     () => <SaveButton onPress={() => setScreenState('saving')} disabled={screenState === 'saving'} />,

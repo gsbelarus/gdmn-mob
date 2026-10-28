@@ -31,7 +31,8 @@ const GoodItem = ({ item }: IProps) => {
           <LargeText style={styles.textBold}>{item?.good.name}</LargeText>
           <View style={styles.directionRow}>
             <MediumText>
-              {item.remains} {item.good.valueName} / {(item?.priceFsn || 0).toString()} р.
+              {item.remains} {item.good.valueName} / {item.agentRemains} {item.good.valueName} /{' '}
+              {(item?.priceFsn || 0).toString()} р.
             </MediumText>
             {barcode && <MediumText style={[styles.number, styles.flexDirectionRow]}>{item.good.barcode}</MediumText>}
           </View>

@@ -56,8 +56,8 @@ export const SelectCellScreen = () => {
 
   const [fromCell, setFromCell] = useState<IMoveLine | undefined>(undefined);
   const [toCell, setToCell] = useState<IMoveLine | IInventoryLine | undefined>(undefined);
-  const [selectedChamber, setSelectedChamber] = useState<string | undefined>('');
-  const [selectedRow, setSelectedRow] = useState<string | undefined>('');
+  const [selectedChamber, setSelectedChamber] = useState<string | undefined>();
+  const [selectedRow, setSelectedRow] = useState<string | undefined>();
 
   const [defaultCell, setDefaultCell] = useState<string[]>([]);
 
@@ -88,7 +88,10 @@ export const SelectCellScreen = () => {
 
   const lines = docs.reduce((prev: IMoveLine[], cur) => [...prev, ...cur.lines], []);
 
-  const cellList = useMemo(() => getCellList(cells[departId || ''] || [], lines || []), [cells, departId, lines]);
+  const cellList = useMemo(
+    () => getCellList(Array.isArray(cells?.[departId ?? '']) ? cells[departId ?? ''] : [], lines ?? []),
+    [cells, departId, lines],
+  );
 
   const handleAddLine = useCallback(
     (line: IMoveLine) => {
@@ -106,7 +109,7 @@ export const SelectCellScreen = () => {
     }
   }, [item, mode]);
 
-  const defaultGoodCells = (cells[departId || ''] || []).filter(
+  const defaultGoodCells = (cells?.[departId || ''] || []).filter(
     (i) => i.defaultGroup?.id && i.defaultGroup?.id === item.good.goodGroupId,
   );
 
@@ -118,7 +121,7 @@ export const SelectCellScreen = () => {
   }, []);
 
   const currentCell = dividedCells.length
-    ? cellList[dividedCells[0].chamber][dividedCells[0].row][defaultGoodCells[0].tier].find(
+    ? cellList[dividedCells[0].chamber]?.[dividedCells[0].row]?.[defaultGoodCells[0].tier]?.find(
         (i) => i.cell === dividedCells[0].cell,
       )
     : undefined;
@@ -144,14 +147,62 @@ export const SelectCellScreen = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentCell?.barcode, mode]);
 
-  const cellsByRow = useMemo(
-    () => (selectedChamber && selectedRow ? Object.entries(cellList?.[selectedChamber][selectedRow]).reverse() : []),
-    [cellList, selectedChamber, selectedRow],
+  const chamberKeys = useMemo(() => Object.keys(cellList || {}), [cellList]);
+  const hasChamberLevel = useMemo(() => chamberKeys.filter((k) => k).length >= 1, [chamberKeys]);
+
+  const rowKeysForSelected = useMemo(
+    () => (selectedChamber !== undefined ? Object.keys(cellList?.[selectedChamber] || {}) : []),
+    [cellList, selectedChamber],
   );
+
+  const hasRowLevel = useMemo(() => rowKeysForSelected.filter((k) => k).length >= 1, [rowKeysForSelected]);
+
+  useEffect(() => {
+    if (selectedChamber === undefined && chamberKeys.length === 1) {
+      setSelectedChamber(chamberKeys[0]);
+    }
+  }, [chamberKeys, selectedChamber]);
+
+  useEffect(() => {
+    if (selectedRow === undefined && rowKeysForSelected.length === 1) {
+      setSelectedRow(rowKeysForSelected[0]);
+    }
+  }, [rowKeysForSelected, selectedRow]);
+
+  const cellsByRow = useMemo(() => {
+    if (selectedChamber === undefined) {
+      return [];
+    }
+
+    const rowsObject = cellList?.[selectedChamber] || {};
+
+    if (hasRowLevel) {
+      if (!selectedRow) {
+        return [];
+      }
+      return Object.entries(rowsObject?.[selectedRow] || {}).reverse();
+    }
+
+    const firstRowKey = Object.keys(rowsObject)[0];
+    if (firstRowKey === undefined) {
+      return [];
+    }
+
+    return Object.entries(rowsObject?.[firstRowKey] || {}).reverse();
+  }, [cellList, hasRowLevel, selectedChamber, selectedRow]);
 
   const handleSaveLine = useCallback(
     (cellData: ICellData) => {
-      const newCell = `${selectedChamber}-${selectedRow}-${cellData.cell}`;
+      let newCell: string;
+      if (hasChamberLevel && hasRowLevel) {
+        newCell = `${selectedChamber}-${selectedRow}-${cellData.cell}`;
+      } else if (hasChamberLevel && !hasRowLevel) {
+        newCell = `${selectedChamber}-${cellData.cell}`;
+      } else if (!hasChamberLevel && hasRowLevel) {
+        newCell = `${selectedRow}-${cellData.cell}`;
+      } else {
+        newCell = `${cellData.cell}`;
+      }
 
       const storeDate = new Date().toISOString();
       if (mode === 0) {
@@ -207,15 +258,17 @@ export const SelectCellScreen = () => {
       doc?.head.fromDepart?.isAddressStore,
       doc?.head.toDepart?.isAddressStore,
       docId,
-      docType,
       fromCell,
       handleAddLine,
       item,
       mode,
       navigation,
       palletList,
+      docType,
       selectedChamber,
       selectedRow,
+      hasChamberLevel,
+      hasRowLevel,
     ],
   );
 
@@ -307,19 +360,21 @@ export const SelectCellScreen = () => {
           </View>
         ) : null}
         <ScrollView>
-          <Group
-            values={Object.keys(cellList)}
-            onPress={(i) => setSelectedChamber(i)}
-            selected={selectedChamber}
-            colorBack="#d5dce3"
-            colorSelected={colors.placeholder}
-            title="Камера"
-            heightBtn={54}
-            widthBtn={106}
-          />
-          {selectedChamber ? (
+          {hasChamberLevel && (
             <Group
-              values={Object.keys(cellList[selectedChamber])}
+              values={chamberKeys}
+              onPress={(i) => setSelectedChamber(i)}
+              selected={selectedChamber}
+              colorBack="#d5dce3"
+              colorSelected={colors.placeholder}
+              title="Камера"
+              heightBtn={54}
+              widthBtn={106}
+            />
+          )}
+          {selectedChamber && hasRowLevel ? (
+            <Group
+              values={rowKeysForSelected}
               onPress={(i) => setSelectedRow(i)}
               selected={selectedRow}
               colorBack="#dbd5da"
@@ -327,7 +382,7 @@ export const SelectCellScreen = () => {
               title="Ряд"
             />
           ) : null}
-          {selectedRow && selectedChamber && (
+          {((hasRowLevel && selectedRow && selectedChamber) || (!hasRowLevel && selectedChamber)) && (
             <View>
               <Text style={localStyles.cellItem}>Ячейки</Text>
 

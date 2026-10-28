@@ -311,7 +311,7 @@ export interface IShipmentListItem {
   id: string;
   lineId?: string;
   name: string;
-  type: 'contact' | 'outlet' | 'order' | 'good' | 'total';
+  type: 'contact' | 'outlet' | 'order' | 'good' | 'total' | 'parentGroup';
 }
 
 export const visitDocumentType: IDocumentType = {

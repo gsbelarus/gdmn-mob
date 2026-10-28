@@ -56,7 +56,7 @@ import {
 
 import { alertWithSound, getBarcode, getBarcodeString, getLineGood, getNextDocNumber } from '../../utils/helpers';
 
-import { ONE_SECOND_IN_MS } from '../../utils/constants';
+import { SCAN_REFOCUS_DELAY_MS } from '../../utils/constants';
 import { IAddressStoreEntity, IGood } from '../../store/app/types';
 
 import { PalletDialog, print } from './components/PalletDialog';
@@ -562,7 +562,7 @@ export const PalletListScreen = () => {
         setTimeout(() => {
           ref.current?.focus();
           ref.current?.clear();
-        }, ONE_SECOND_IN_MS);
+        }, SCAN_REFOCUS_DELAY_MS);
     }
   }, [scanned, ref, visibleDialog]);
 

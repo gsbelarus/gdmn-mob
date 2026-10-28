@@ -40,10 +40,19 @@ const ScanGoodScreen = () => {
   }, [navigation]);
 
   const doc = docSelectors.selectByDocId<IScanDocument>(docId);
+  const isBlocked = doc?.status !== 'DRAFT';
 
   const handleGetScannedObject = useCallback(
     (brc: string) => {
-      if (doc?.head.isBindGood && doc?.lines?.find((l) => l.barcode === brc)) {
+      if (!doc) {
+        return;
+      }
+
+      if (isBlocked) {
+        return;
+      }
+
+      if (doc.head.isBindGood && doc?.lines?.find((l) => l.barcode === brc)) {
         setScaner({
           state: 'error',
           message: 'Баркод  уже добавлен',
@@ -55,7 +64,7 @@ const ScanGoodScreen = () => {
 
       setScaner({ state: 'found' });
     },
-    [doc?.head.isBindGood, doc?.lines],
+    [doc, isBlocked],
   );
 
   const [currentLineId, setCurrentLineId] = useState('');
@@ -82,11 +91,11 @@ const ScanGoodScreen = () => {
       return;
     }
 
-    if (!doc) {
+    if (!doc || isBlocked) {
       return;
     }
 
-    const line: IScanLine = { ...scannedObject, sortOrder: doc.lines?.length + 1 };
+    const line: IScanLine = { ...scannedObject, sortOrder: (doc.lines?.length || 0) + 1 };
 
     dispatch(documentActions.addDocumentLine({ docId, line }));
 
@@ -99,7 +108,7 @@ const ScanGoodScreen = () => {
     }
 
     setScaner({ state: 'init' });
-  }, [scannedObject, doc, dispatch, docId, navigation]);
+  }, [scannedObject, doc, isBlocked, dispatch, docId, navigation]);
 
   const handleClearScaner = () => setScaner({ state: 'init' });
 
