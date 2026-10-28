@@ -308,6 +308,17 @@ const totalList = (list: IOrderTotalLine[]) =>
     },
   );
 
+//Сумма позиций с НДС без группировки; формула совпадает с totalListByGroup
+const getOrderSumVat = (lines: IOrderLine[], isUseUnitMeasure = true) =>
+  lines.reduce((sum, line) => {
+    const lineQuantity = round(line.quantity, 3);
+    const invWeight = line.good.invWeight || 1;
+    const unitQuantity = isUseUnitMeasure ? lineQuantity / invWeight : lineQuantity;
+    const s1 = round(unitQuantity * line.good.priceFsn);
+
+    return sum + s1 + round((s1 * Number(line.good.vat || 0)) / 100, 3);
+  }, 0);
+
 const getItemLayout = (index: number, height: number) => ({
   length: height,
   offset: height * index,
@@ -426,6 +437,7 @@ export {
   isLineQuantityInKg,
   totalListByGroup,
   totalList,
+  getOrderSumVat,
   getItemLayout,
   viewabilityConfig,
   jsonFormat,
