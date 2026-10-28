@@ -2,7 +2,7 @@
   "expo": {
     "name": "GDMN Агент",
     "slug": "gdmn-sales-representative",
-    "version": "0.15.1",
+    "version": "0.15.14",
     "githubUrl": "https://github.com/stasgm/gdmn-mob",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -29,7 +29,7 @@
     "android": {
       "package": "com.gsbelarus.salesrepresentative2",
       "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION", "FOREGROUND_SERVICE"],
-      "versionCode": 67
+      "versionCode": 80
     },
     "plugins": [
       [

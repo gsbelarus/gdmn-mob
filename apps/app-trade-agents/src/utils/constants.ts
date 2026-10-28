@@ -127,4 +127,8 @@ export const reports: IListItem[] = [
 export const shipments: IListItem[] = [
   { id: 'shipment', value: 'Накладные' },
   { id: 'noShipment', value: 'Недогрузы' },
+  { id: 'group', value: 'Накладные по группам' },
+  { id: 'groupInvoices', value: 'Недогрузы по группам' },
+  { id: 'groupDay', value: 'Суммарно за день' },
+  { id: 'groupDayNoShipment', value: 'Недогрузы за день' },
 ];

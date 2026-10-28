@@ -20,6 +20,7 @@ export interface IGood extends INamedEntity {
   invWeight: number; // Вес единицы товара
   priceFso: number; // цена ФСО
   priceFsn: number; // цена ФСН
+  priceRed?: number; // цена со скидкой
   priceFsoSklad: number; // цена ФСО склад
   priceFsnSklad: number; // цена ФСН склад
   scale: number; //количество единиц в месте

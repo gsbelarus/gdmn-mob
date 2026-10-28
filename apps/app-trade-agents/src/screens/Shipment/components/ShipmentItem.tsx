@@ -21,6 +21,18 @@ const ShipmentItem = ({ item, onPress }: IShipmentItem) => {
 
   const textStyle = [localStyles.cellText, textColor];
   const textBoldStyle = [textStyle, textColor, styles.textBold];
+  const tableHeader = (
+    <DataTable.Header style={localStyles.header}>
+      {['Заявлено', 'Отгружено', 'Разница'].map((i) => {
+        return (
+          <DataTable.Title key={i} textStyle={textBoldStyle} style={localStyles.title} numeric>
+            {i}
+          </DataTable.Title>
+        );
+      })}
+    </DataTable.Header>
+  );
+
   return (
     <>
       {item.type !== 'good' && item.type !== 'total' ? (
@@ -28,7 +40,7 @@ const ShipmentItem = ({ item, onPress }: IShipmentItem) => {
           <View
             style={[
               localStyles.group,
-              item.type === 'order' && [
+              (item.type === 'order' || item.type === 'parentGroup') && [
                 styles.directionRow,
                 {
                   backgroundColor: globalColors.backgroundLight,
@@ -42,7 +54,9 @@ const ShipmentItem = ({ item, onPress }: IShipmentItem) => {
                   ? [localStyles.contact, localStyles.textSize]
                   : item.type === 'outlet'
                     ? localStyles.outlet
-                    : localStyles.order
+                    : item.type === 'parentGroup'
+                      ? [localStyles.order, localStyles.parentGroup]
+                      : localStyles.order
               }
             >
               {item.name || ''}
@@ -51,23 +65,15 @@ const ShipmentItem = ({ item, onPress }: IShipmentItem) => {
               <IconButton icon="clipboard-list-outline" size={20} onPress={() => onPress && onPress()} />
             )}
           </View>
-          {item.type === 'order' && (
-            <DataTable.Header style={localStyles.header}>
-              {['Заявлено', 'Отгружено', 'Разница'].map((i) => {
-                return (
-                  <DataTable.Title key={i} textStyle={textBoldStyle} style={localStyles.title} numeric>
-                    {i}
-                  </DataTable.Title>
-                );
-              })}
-            </DataTable.Header>
-          )}
+          {(item.type === 'order' || item.type === 'parentGroup') && tableHeader}
         </>
       ) : (
         <>
           <DataTable.Row style={[localStyles.rowName, localStyles.borderBottomColor]}>
             <View>
-              <MediumText style={[item.type === 'total' && textBoldStyle]}>{item?.name || ''}</MediumText>
+              <MediumText style={[item.indent && localStyles.indent, item.type === 'total' && textBoldStyle]}>
+                {item?.name || ''}
+              </MediumText>
             </View>
           </DataTable.Row>
           <DataTable.Row style={[localStyles.row, localStyles.borderBottomColor]}>
@@ -108,6 +114,12 @@ const localStyles = StyleSheet.create({
     fontWeight: 'bold',
     paddingVertical: 10,
     textAlignVertical: 'center',
+  },
+  parentGroup: {
+    fontStyle: 'italic',
+  },
+  indent: {
+    paddingLeft: 20,
   },
   textSize: { fontSize: 16 },
   group: {

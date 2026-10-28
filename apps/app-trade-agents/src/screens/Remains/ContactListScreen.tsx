@@ -9,7 +9,7 @@ import {
   SubTitle,
 } from '@lib/mobile-ui';
 import { refSelectors, useSelector } from '@lib/store';
-import { IDepartment, IReference } from '@lib/types';
+import { IDepartment, INamedEntity, IReference } from '@lib/types';
 import { useNavigation, useTheme } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
@@ -37,8 +37,9 @@ const ContactListScreen = () => {
 
   const remains = refSelectors.selectByName<IRemains>('remains')?.data[0];
   const department = refSelectors.selectByName<IDepartment>('department')?.data || [];
-  const contacts = department?.filter((i) => remains?.[i.id]);
-  console.log('contacts', contacts);
+  const employee = refSelectors.selectByName<INamedEntity>('employee')?.data || [];
+  const contacts = department?.concat(employee)?.filter((i) => remains?.[i.id]);
+
   const syncDate = useSelector((state) => state.app.syncDate);
 
   const filteredList = useMemo(() => {

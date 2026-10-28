@@ -22,6 +22,7 @@ import {
   SearchButton,
   navBackButton,
   MediumText,
+  SubTitle,
   globalColors,
   ItemSeparator,
   AppActivityIndicator,
@@ -111,10 +112,14 @@ const SelectGoodScreen = () => {
   // const [goodRemains] = useState<IRemGood[]>(() =>
   //   doc?.head.depart?.id ? getRemGoodListByContact(goodsRef, remains?.[doc?.head.depart?.id], true) : [],
   // );
-  const employee = refSelectors.selectByName<INamedEntity>('employee')?.data || [];
+  const employeeData = refSelectors.selectByName<INamedEntity>('employee')?.data;
+  const employee = useMemo(() => employeeData || [], [employeeData]);
 
-  const [goodRemains] = useState<IRemGood[]>(() =>
-    employee?.[0] ? getRemGoodListByContact(goodsRef, remains?.[employee?.[0].id], true) : [],
+  //useMemo, а не useState: список остатков должен обновляться после синхронизации,
+  //пока экран открыт
+  const goodRemains = useMemo<IRemGood[]>(
+    () => (employee?.[0] ? getRemGoodListByContact(goodsRef, remains?.[employee?.[0].id], true) : []),
+    [goodsRef, remains, employee],
   );
   const goods =
     useRemains && isUseRemains ? goodsRef.filter((item) => goodRemains.find((i) => i.good.id === item.id)) : goodsRef;
@@ -207,6 +212,17 @@ const SelectGoodScreen = () => {
   );
 
   const [selectedGroup, setSelectedGroup] = useState<IGoodGroup | undefined>(undefined);
+
+  //После синхронизации модель групп может перестроиться - сбрасываем выбранную группу,
+  //если её больше нет в модели, иначе список останется пустым до ручного пер тыка
+  useEffect(() => {
+    if (selectedParentGroup && !firstLevelGroups.some((group) => group.id === selectedParentGroup.id)) {
+      setSelectedParentGroup(firstLevelGroups[0]);
+      setSelectedGroup(undefined);
+    } else if (selectedGroup && !nextLevelGroups.some((group) => group.id === selectedGroup.id)) {
+      setSelectedGroup(undefined);
+    }
+  }, [firstLevelGroups, nextLevelGroups, selectedGroup, selectedParentGroup]);
 
   const goodModel = useMemo(
     () =>
@@ -664,6 +680,15 @@ const SelectGoodScreen = () => {
         keyExtractor={keyExtractor}
         extraData={[doc?.lines, docId]}
         keyboardShouldPersistTaps={'handled'}
+        ListEmptyComponent={
+          isUseRemains && useRemains ? (
+            <SubTitle style={localStyles.emptyRemains}>
+              {goodRemains.length
+                ? 'Список пуст'
+                : 'Нет данных по остаткам. Отключите режим «Использовать остатки» или выполните синхронизацию'}
+            </SubTitle>
+          ) : null
+        }
       />
       {(selectedLine || selectedGood) && (
         <OrderLineDialog
@@ -784,4 +809,5 @@ const localStyles = StyleSheet.create({
   primeButton: { height: 40 },
   remains: { flexDirection: 'row', alignItems: 'center' },
   barcode: { fontSize: 12, opacity: 0.8 },
+  emptyRemains: { textAlign: 'center', padding: 16 },
 });

@@ -146,7 +146,11 @@ const OrderViewScreen = () => {
 
   const handleSendRemainsRequest = useCallback(async () => {
     if (isUseRemains) {
-      await sendRemainsRequest();
+      try {
+        await sendRemainsRequest();
+      } catch (e) {
+        console.warn('Не удалось обновить остатки', e);
+      }
     }
   }, [isUseRemains, sendRemainsRequest]);
 
@@ -522,7 +526,7 @@ const OrderViewScreen = () => {
             isChecked={checkedId ? true : false}
             onLongPress={() => !isBlocked && handleAddDeletelList(item.id, checkedId)}
             isDelList={isDelList}
-            isRemains={isUseRemains}
+            isUseRemains={isUseRemains}
           />
         </View>
       );

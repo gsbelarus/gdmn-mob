@@ -165,16 +165,19 @@ const getGroupModelByContact = (
         }, {})
       : (prevLines.length ? goods.filter((g) => prevLines.some((p) => p.good.id === g.id)) : goods).reduce(
           (p: IMGroupData<IMGroup>, good: IGood) => {
-            if (!p[good.goodgroup.id]) {
-              const group = groups.find((gr) => gr.id === good.goodgroup.id);
-              if (group && (!filterTextUpper || group.name.toUpperCase().includes(filterTextUpper))) {
-                p[good.goodgroup.id] = {
+            //Группа товара может отсутствовать в справочнике групп (например, еще не загружена после синхронизации) -
+            //такой товар показываем в группе 'Другое', а не выбрасываем
+            const bucketId = groups.some((gr) => gr.id === good.goodgroup.id) ? good.goodgroup.id : UNKNOWN_GROUP.id;
+            const group = groups.find((gr) => gr.id === bucketId);
+            if (group && (!filterTextUpper || group.name.toUpperCase().includes(filterTextUpper))) {
+              if (!p[bucketId]) {
+                p[bucketId] = {
                   group: group.parent?.id ? group : ({ ...group, parent: UNKNOWN_GROUP } as IGoodGroup),
                   goods: [good],
                 };
+              } else {
+                p[bucketId].goods?.push(good);
               }
-            } else {
-              p[good.goodgroup.id].goods?.push(good);
             }
 
             return p;

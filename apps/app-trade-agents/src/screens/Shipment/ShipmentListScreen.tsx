@@ -26,15 +26,17 @@ import {
   IContactData,
   IDebt,
   IGood,
+  IGoodGroup,
   IShipmentListItem,
   IOrderDocument,
   IOrderLine,
   IOutlet,
   IShipmentHead,
+  IShipmentLine,
   IShipmentLinesRef,
   IShipmentListFormParam,
 } from '../../store/types';
-import { shipments } from '../../utils/constants';
+import { shipments, UNKNOWN_GROUP } from '../../utils/constants';
 import { getNextDocNumber } from '../../utils/helpers';
 
 import ShipmentItem from './components/ShipmentItem';
@@ -69,6 +71,7 @@ const ShipmentListScreen = () => {
   const goods = refSelectors.selectByName<IGood>('good')?.data;
   const contacts = refSelectors.selectByName<IContact>('contact')?.data;
   const outlets = refSelectors.selectByName<IOutlet>('outlet')?.data;
+  const goodGroups = refSelectors.selectByName<IGoodGroup>('goodGroup')?.data;
 
   const orders = docSelectors.selectByDocType<IOrderDocument>('order');
   const orderType = refSelectors
@@ -84,13 +87,14 @@ const ShipmentListScreen = () => {
     (state) => state.app.formParams as IShipmentListFormParam,
   );
 
+  // Полные данные — «Накладные» и «По группам»; во всех видах недогрузов — только строки с diff < 0
   const filteredShipmentDetails = useMemo(
     () =>
       shipmentDetails
         ? Object.entries(shipmentDetails).reduce((prev: IShipmentLinesRef, [orderId, lines]) => {
             const cur = lines?.filter(
               (i) =>
-                (shipment.id === 'shipment' ? true : i.diff < 0) &&
+                (shipment.id === 'shipment' || shipment.id === 'group' ? true : i.diff < 0) &&
                 (filterShipmentGood && filterShipmentGood?.length > 0
                   ? filterShipmentGood.find((g) => g.id === i.goodId)
                   : true),
@@ -233,6 +237,189 @@ const ShipmentListScreen = () => {
     },
     [],
   );
+
+  // Групповые виды отгрузки.
+  // Плоские («Суммарно за день» — полные данные, «Недогрузы за день» — только недогрузы):
+  // родительская группа → дочерние группы, суммы за день по всем точкам.
+  // Иерархические («По группам» — полные данные, «Недогрузы по группам» — только недогрузы):
+  // организация → магазин → родительская группа (шапка с колонками) → строки дочерних групп
+  // и разбивка по накладным внутри группы
+  const groupList: IShipmentListItem[] = useMemo(() => {
+    const result: IShipmentListItem[] = [];
+
+    type IGroupTotal = {
+      name: string;
+      orderQ: number;
+      sellQ: number;
+      diff: number;
+      invoices: Record<string, { orderQ: number; sellQ: number; diff: number }>;
+    };
+    type IParentGroup = { name: string; groups: Record<string, IGroupTotal> };
+
+    const addLine = (parents: Record<string, IParentGroup>, goodId: string, orderId: string, line: IShipmentLine) => {
+      const good = goods?.find((i) => i.id === goodId);
+
+      if (!good) {
+        return;
+      }
+
+      // У товара в группе только id и название, родителя берём из справочника групп
+      const groupEntity = goodGroups?.find((gg) => gg.id === good.goodgroup.id);
+      const parent = groupEntity?.parent;
+      const parentId = parent?.id || UNKNOWN_GROUP.id;
+      const parentName = parent?.name || UNKNOWN_GROUP.name;
+      const groupId = groupEntity?.id || good.goodgroup.id;
+      const groupName = groupEntity?.name || good.goodgroup.name || groupId;
+
+      const parentItem = parents[parentId] || { name: parentName, groups: {} };
+      const group = parentItem.groups[groupId] || {
+        name: groupName,
+        orderQ: 0,
+        sellQ: 0,
+        diff: 0,
+        invoices: {},
+      };
+      const invoice = group.invoices[orderId] || { orderQ: 0, sellQ: 0, diff: 0 };
+
+      group.orderQ += line.orderQ;
+      group.sellQ += line.sellQ;
+      group.diff += line.diff;
+      invoice.orderQ += line.orderQ;
+      invoice.sellQ += line.sellQ;
+      invoice.diff += line.diff;
+      group.invoices[orderId] = invoice;
+      parentItem.groups[groupId] = group;
+      parents[parentId] = parentItem;
+    };
+
+    // Выводит группы с итогами; возвращает сумму по всем группам (для итога по магазину/за день)
+    const pushGroups = (parents: Record<string, IParentGroup>, withInvoices: boolean) => {
+      const total = { orderQ: 0, sellQ: 0, diff: 0 };
+
+      Object.values(parents)
+        .sort((a, b) => (a.name < b.name ? -1 : 1))
+        .forEach((parent) => {
+          result.push({ id: generateId(), name: parent.name, type: 'parentGroup' });
+
+          const parentTotal = { orderQ: 0, sellQ: 0, diff: 0 };
+
+          Object.values(parent.groups)
+            .sort((a, b) => (a.name < b.name ? -1 : 1))
+            .forEach((group) => {
+              result.push({
+                id: generateId(),
+                name: group.name,
+                orderQ: group.orderQ,
+                sellQ: group.sellQ,
+                diff: group.diff,
+                type: 'good',
+              });
+
+              parentTotal.orderQ += group.orderQ;
+              parentTotal.sellQ += group.sellQ;
+              parentTotal.diff += group.diff;
+
+              if (withInvoices) {
+                Object.entries(group.invoices).forEach(([orderId, invoice]) => {
+                  const refOrder = shipmentInfo?.find((i) => i.id === orderId);
+                  result.push({
+                    id: generateId(),
+                    lineId: orderId,
+                    indent: true,
+                    name: `Заявка №${refOrder?.number || '-'} от ${
+                      refOrder?.documentDate ? getDateString(refOrder?.documentDate) : '-'
+                    } ${refOrder?.shipmentNumber ? `\nТТН №${refOrder?.shipmentNumber}` : ''}`,
+                    orderQ: invoice.orderQ,
+                    sellQ: invoice.sellQ,
+                    diff: invoice.diff,
+                    type: 'good',
+                  });
+                });
+              }
+            });
+
+          result.push({
+            id: generateId(),
+            name: `Итого по группе «${parent.name}»`,
+            ...parentTotal,
+            type: 'total',
+          });
+
+          total.orderQ += parentTotal.orderQ;
+          total.sellQ += parentTotal.sellQ;
+          total.diff += parentTotal.diff;
+        });
+
+      return total;
+    };
+
+    // Плоские виды «Суммарно за день» (полные данные) и «Недогрузы за день» (только недогрузы):
+    // родительская группа → дочерние группы, без разбивки по организациям и магазинам
+    if (shipment.id === 'groupDay' || shipment.id === 'groupDayNoShipment') {
+      const parents: Record<string, IParentGroup> = {};
+
+      Object.values(list).forEach((contactData) => {
+        Object.values(contactData).forEach((outletData) => {
+          Object.entries(outletData).forEach(([orderId, orderLines]) => {
+            orderLines.forEach((line) => addLine(parents, line.goodId, orderId, line));
+          });
+        });
+      });
+
+      const total = pushGroups(parents, false);
+
+      result.push({
+        id: generateId(),
+        name: shipment.id === 'groupDay' ? 'Итого за день' : 'Итого недогрузов за день',
+        ...total,
+        type: 'total',
+      });
+
+      return result;
+    }
+
+    Object.entries(list).forEach(([contactId, contactData]) => {
+      const contact = contacts?.find((i) => i.id === contactId);
+
+      if (!contact) {
+        return;
+      }
+
+      result.push({ id: generateId(), lineId: contact.id, name: contact.name, type: 'contact' });
+
+      Object.entries(contactData).forEach(([outletId, outletData]) => {
+        const outlet = outlets?.find((i) => i.id === outletId);
+
+        if (!outlet) {
+          return;
+        }
+
+        result.push({
+          id: generateId(),
+          lineId: outlet.id,
+          name: `${outlet.name}, ${outlet.address}`,
+          type: 'outlet',
+        });
+
+        const parents: Record<string, IParentGroup> = {};
+
+        Object.entries(outletData).forEach(([orderId, orderLines]) => {
+          orderLines.forEach((line) => addLine(parents, line.goodId, orderId, line));
+        });
+
+        const outletTotal = pushGroups(parents, true);
+
+        result.push({
+          id: generateId(),
+          name: 'Итого по магазину',
+          ...outletTotal,
+          type: 'total',
+        });
+      });
+    });
+
+    return result;
+  }, [contacts, goods, goodGroups, list, outlets, shipmentInfo, shipment.id]);
 
   const handleCleanFormParams = useCallback(() => {
     dispatch(
@@ -440,7 +627,14 @@ const ShipmentListScreen = () => {
       )}
 
       <FlashList
-        data={filteredList}
+        data={
+          shipment.id === 'group' ||
+          shipment.id === 'groupInvoices' ||
+          shipment.id === 'groupDay' ||
+          shipment.id === 'groupDayNoShipment'
+            ? groupList
+            : filteredList
+        }
         renderItem={renderItem}
         estimatedItemSize={60}
         ItemSeparatorComponent={ItemSeparator}
