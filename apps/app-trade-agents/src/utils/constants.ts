@@ -69,6 +69,15 @@ export const appSettings: Settings = {
     visible: true,
     group: mainSettingGroup,
   },
+  isUseLimitControl: {
+    id: 'isUseLimitControl',
+    description: 'Учитывать лимиты задолженности',
+    data: true,
+    type: 'boolean',
+    sortOrder: 6,
+    visible: true,
+    group: mainSettingGroup,
+  },
 };
 
 export const viewTypeList: IListItem[] = [

@@ -32,6 +32,7 @@ import {
   keyExtractor,
   sleep,
   useSendOneRefRequest,
+  round,
 } from '@lib/mobile-hooks';
 
 import { INamedEntity, ScreenState } from '@lib/types';
@@ -44,6 +45,7 @@ import {
   IContact,
   IDebt,
   IGood,
+  IGoodGroup,
   IOrderDocument,
   IOrderLine,
   IOutlet,
@@ -57,7 +59,7 @@ import { OrdersStackParamList } from '../../navigation/Root/types';
 
 import { getStatusColor } from '../../utils/constants';
 
-import { getNextDocNumber } from '../../utils/helpers';
+import { getNextDocNumber, getOrderSumVat, totalList, totalListByGroup } from '../../utils/helpers';
 
 import { ICoords } from '../../store/geo/types';
 
@@ -106,13 +108,70 @@ const OrderViewScreen = () => {
 
   const packages = refSelectors.selectByName<IPackageGood>('packageGood')?.data;
   const goods = refSelectors.selectByName<IGood>('good')?.data;
+  const goodGroups = refSelectors.selectByName<IGoodGroup>('goodGroup')?.data;
 
   const settings = useSelector((state) => state.settings.data);
   const isUseRemains = settings?.isUseRemains?.data as boolean;
   const isUseUnitMeasure = (settings?.isUseUnitMeasure?.data ?? true) as boolean;
+  const isUseLimitControl = (settings?.isUseLimitControl?.data ?? true) as boolean;
   const depart = refSelectors.selectByRefId<INamedEntity>('department', order?.head?.depart?.id)?.name;
 
+  const docs = useSelector((state) => state.documents.list) as IOrderDocument[];
+
+  const orderTotalSum = useMemo(() => {
+    if (!isUseLimitControl || !Number(limitSum) || !order) {
+      return 0;
+    }
+    const firstLevelGroups = goodGroups?.filter((item) => !item.parent?.id);
+    const total = totalList(
+      totalListByGroup(firstLevelGroups, goodGroups, order.lines, isUseUnitMeasure, isUseRemains),
+    );
+
+    return total?.sumVat || 0;
+  }, [isUseLimitControl, limitSum, order, goodGroups, isUseUnitMeasure, isUseRemains]);
+
+  //Сумма позиций других незавизированных (DRAFT/READY) заявок того же договора -
+  //они тоже расходуют доступный лимит
+  const othersUnsentSum = useMemo(() => {
+    if (!isUseLimitControl || !Number(limitSum) || !order?.head?.contact.id) {
+      return 0;
+    }
+    return docs.reduce((sum, o) => {
+      if (
+        o.id !== id &&
+        o.head?.contact?.id === order.head.contact.id &&
+        (o.status === 'DRAFT' || o.status === 'READY')
+      ) {
+        sum += getOrderSumVat(o.lines ?? [], isUseUnitMeasure);
+      }
+      return sum;
+    }, 0);
+  }, [docs, id, order?.head?.contact.id, limitSum, isUseLimitControl, isUseUnitMeasure]);
+
+  //Доступно по лимиту: лимит минус задолженность минус другие неотправленные заявки;
+  //limitExceeded - на сколько текущая заявка превышает остаток
+  const limitExceeded = useMemo(() => {
+    const limit = Number(limitSum);
+    if (!isUseLimitControl || !limit) {
+      return 0;
+    }
+    const excess = round(othersUnsentSum + orderTotalSum + (debt?.saldo ?? 0) - limit, 2);
+
+    return excess > 0 ? excess : 0;
+  }, [isUseLimitControl, limitSum, othersUnsentSum, orderTotalSum, debt?.saldo]);
+
   const handleAddOrderLine = useCallback(() => {
+    if (limitExceeded) {
+      setVisibleLimitDialog(true);
+    } else {
+      navigation.navigate('SelectGood', {
+        docId: id,
+      });
+    }
+  }, [limitExceeded, id, navigation]);
+
+  const handleAddExceededLimit = useCallback(() => {
+    setVisibleLimitDialog(false);
     navigation.navigate('SelectGood', {
       docId: id,
     });
@@ -131,6 +190,7 @@ const OrderViewScreen = () => {
   const visit = docSelectors.selectByDocType<IVisitDocument>('visit')?.find((e) => e.head.routeLineId === routeLineId);
 
   const [visibleDebtDialog, setVisibleDebtDialog] = useState(false);
+  const [visibleLimitDialog, setVisibleLimitDialog] = useState(false);
 
   const sendRequest = useSendOneRefRequest('Дебиторская задолженность', {
     name: 'debt',
@@ -563,7 +623,13 @@ const OrderViewScreen = () => {
   return (
     <>
       <View style={styles.container}>
-        {orderLine && <OrderLineEdit orderLine={orderLine} onDismiss={() => setOrderLine(undefined)} />}
+        {orderLine && (
+          <OrderLineEdit
+            orderLine={orderLine}
+            onDismiss={() => setOrderLine(undefined)}
+            isUseUnitMeasure={isUseUnitMeasure}
+          />
+        )}
         <InfoBlock
           colorLabel={getStatusColor(order?.status || 'DRAFT')}
           title={order.head?.outlet?.name}
@@ -642,6 +708,17 @@ const OrderViewScreen = () => {
         text={'Вы уверены, что хотите отправить документ?'}
         onCancel={() => setVisibleSendDialog(false)}
         onOk={handleSendDocument}
+        okDisabled={loading}
+      />
+      <SimpleDialog
+        visible={visibleLimitDialog}
+        title={'Внимание! Превышение лимита!'}
+        text={`Лимит превышен на сумму ${formatValue(
+          { type: 'currency', decimals: 2 },
+          limitExceeded,
+        )}. Хотите продолжить добавление товаров?`}
+        onCancel={() => setVisibleLimitDialog(false)}
+        onOk={handleAddExceededLimit}
         okDisabled={loading}
       />
       <SimpleDialog

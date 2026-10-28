@@ -70,6 +70,7 @@ const SelectGoodScreen = () => {
   const settings = useSelector((state) => state.settings.data);
   const isUseNetPrice = settings?.isUseNetPrice?.data as boolean;
   const isUseRemains = settings?.isUseRemains?.data as boolean;
+  const isUseUnitMeasure = (settings?.isUseUnitMeasure?.data ?? true) as boolean;
 
   const [isUseMatrix, setIsUseMatrix] = useState(isUseNetPrice);
   const [useRemains, setUseRemains] = useState(isUseRemains);
@@ -600,7 +601,14 @@ const SelectGoodScreen = () => {
 
   return (
     <AppScreen style={localStyles.container}>
-      {!!orderLine && <OrderLineEdit orderLine={orderLine} onDismiss={hadndleDismiss} isUseRemains={isUseRemains} />}
+      {!!orderLine && (
+        <OrderLineEdit
+          orderLine={orderLine}
+          onDismiss={hadndleDismiss}
+          isUseRemains={isUseRemains}
+          isUseUnitMeasure={isUseUnitMeasure}
+        />
+      )}
       {filterVisible && (
         <View>
           <View style={styles.flexDirectionRow}>

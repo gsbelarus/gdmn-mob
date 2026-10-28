@@ -1,7 +1,7 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { View, Alert, StyleSheet, Modal, SafeAreaView } from 'react-native';
 
-import { documentActions, refSelectors, useDispatch } from '@lib/store';
+import { documentActions, docSelectors, refSelectors, useDispatch, useSelector } from '@lib/store';
 import { SaveButton } from '@lib/mobile-ui';
 
 import { IconButton, Title } from 'react-native-paper';
@@ -10,7 +10,11 @@ import { ScreenState } from '@lib/types';
 
 import { useTheme } from '@react-navigation/native';
 
-import { IOrderLine, IPackageGood } from '../../../store/types';
+import { formatValue, round } from '@lib/mobile-hooks';
+
+import { IContact, IDebt, IOrderDocument, IOrderLine, IPackageGood } from '../../../store/types';
+
+import { getOrderSumVat } from '../../../utils/helpers';
 
 import OrderLine from './OrderLine';
 
@@ -38,6 +42,27 @@ const OrderLineEdit = ({ orderLine, onDismiss, isUseRemains = false, isUseUnitMe
   const packages = refSelectors
     .selectByName<IPackageGood>('packageGood')
     ?.data?.filter((e) => e.good.id === item.good.id);
+
+  const doc = docSelectors.selectByDocId<IOrderDocument>(docId);
+  const contactId = doc?.head?.contact.id;
+  const limitSum = refSelectors.selectByRefId<IContact>('contact', contactId)?.limitSum;
+  const saldo = refSelectors.selectByRefId<IDebt>('debt', contactId)?.saldo ?? 0;
+  const isUseLimitControl = useSelector((state) => state.settings.data.isUseLimitControl?.data) as boolean;
+  const docs = useSelector((state) => state.documents.list) as IOrderDocument[];
+
+  //Сумма позиций других незавизированных (DRAFT/READY) заявок того же договора -
+  //они тоже расходуют доступный лимит
+  const othersUnsentSum = useMemo(() => {
+    if (!isUseLimitControl || !Number(limitSum) || !contactId) {
+      return 0;
+    }
+    return docs.reduce((sum, o) => {
+      if (o.id !== docId && o.head?.contact?.id === contactId && (o.status === 'DRAFT' || o.status === 'READY')) {
+        sum += getOrderSumVat(o.lines ?? [], isUseUnitMeasure);
+      }
+      return sum;
+    }, 0);
+  }, [docs, docId, contactId, limitSum, isUseLimitControl, isUseUnitMeasure]);
 
   const handleSaveLine = useCallback(() => {
     setScreenState('saving');
@@ -91,8 +116,50 @@ const OrderLineEdit = ({ orderLine, onDismiss, isUseRemains = false, isUseUnitMe
       return;
     }
 
+    //Контроль лимита задолженности: лимит минус текущая задолженность минус суммы
+    //других неотправленных заявок договора - на остаток можно набирать
+    const limit = Number(limitSum);
+    if (isUseLimitControl && limit) {
+      const newSum =
+        othersUnsentSum +
+        getOrderSumVat([...(doc?.lines ?? []).filter((l) => l.id !== line.id), lineForSave], isUseUnitMeasure);
+      const oldSum = othersUnsentSum + getOrderSumVat(doc?.lines ?? [], isUseUnitMeasure);
+      const excess = round(newSum + saldo - limit, 2);
+      if (excess > 0 && newSum > oldSum) {
+        Alert.alert(
+          'Внимание! Превышение лимита!',
+          `Лимит превышен на сумму ${formatValue(
+            { type: 'currency', decimals: 2 },
+            excess,
+          )}. Всё равно сохранить позицию?`,
+          [
+            {
+              text: 'Да',
+              onPress: saveLine,
+            },
+            { text: 'Отмена', onPress: () => setScreenState('idle') },
+          ],
+        );
+        return;
+      }
+    }
+
     saveLine();
-  }, [dispatch, docId, isUseRemains, line, mode, onDismiss, packages?.length]);
+  }, [
+    dispatch,
+    doc,
+    docId,
+    isUseLimitControl,
+    isUseRemains,
+    isUseUnitMeasure,
+    line,
+    limitSum,
+    mode,
+    onDismiss,
+    othersUnsentSum,
+    packages?.length,
+    saldo,
+  ]);
 
   return (
     <Modal animationType="fade" visible={true}>
